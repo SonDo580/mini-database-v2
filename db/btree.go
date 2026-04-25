@@ -7,13 +7,18 @@ import (
 )
 
 /*
+B+Tree:
+. a height-balanced n-ary tree
+. insert a key may cause splitting, which may increase tree height
+. delete a key may allow merging, which may decrease tree height
+
 Node format:
 | type | nkeys | pointers   | offsets    | KVs | unused |
-| 2B   | 2B    | nkeys × 8B | nkeys × 2B | ... |        |
+| 2B   | 2B    | nkeys x 8B | nkeys x 2B | ... |        |
 . type: leaf or internal
 . nkeys: number of keys (and number of child pointers)
-. offset of the 1st KV is always 0, so it is not stored.
-  last item is offset just past the end
+. offets: offset of the 1st KV is always 0, so it is not stored.
+  last item is offset just past the end.
 
 KV format:
 | key_size | val_size | key | val |
@@ -238,7 +243,7 @@ func nodeSplit2(left BNode, right BNode, old BNode) {
 	left.setHeader(old.btype(), nleft)
 	right.setHeader(old.btype(), nright)
 	nodeAppendRange(left, old, 0, 0, nleft)
-	nodeAppendRange(left, old, 0, nleft, nright)
+	nodeAppendRange(right, old, 0, nleft, nright)
 
 	// NOTE: the left half may still be too big
 	assert(right.nbytes() <= BTREE_PAGE_SIZE)
@@ -459,7 +464,7 @@ func (tree *BTree) Insert(key []byte, val []byte) error {
 		// -> insert an empty key so lookup always finds a position
 		root.setHeader(BNODE_LEAF, 2)      // 1 for current KV, 1 for sentinel value
 		nodeAppendKV(root, 0, 0, nil, nil) // sentinel value
-		nodeAppendKV(root, 0, 1, key, val)
+		nodeAppendKV(root, 1, 0, key, val)
 
 		tree.root = tree.new(root)
 		return nil
