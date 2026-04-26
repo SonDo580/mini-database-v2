@@ -447,6 +447,23 @@ func checkLimit(key []byte, val []byte) error {
 	return nil
 }
 
+// get value by key
+func nodeGetKey(tree *BTree, node BNode, key []byte) ([]byte, bool) {
+	idx := nodeLookupLE(node, key)
+	switch node.btype() {
+	case BNODE_LEAF:
+		if bytes.Equal(key, node.getKey(idx)) {
+			return node.getVal(idx), true
+		} else {
+			return nil, false
+		}
+	case BNODE_NODE:
+		return nodeGetKey(tree, tree.get(node.getPtr(idx)), key)
+	default:
+		panic("invalid node type!")
+	}
+}
+
 // ===== interface =====
 
 // insert new key or update an existing key
@@ -491,7 +508,7 @@ func (tree *BTree) Insert(key []byte, val []byte) error {
 }
 
 // delete a key and returns whether the key exists
-func (tree *BTree) Delete(key []byte) (bool, error) {
+func (tree *BTree) Delete(key []byte) (deleted bool, err error) {
 	if err := checkLimit(key, nil); err != nil {
 		return false, err
 	}
@@ -513,4 +530,12 @@ func (tree *BTree) Delete(key []byte) (bool, error) {
 		tree.root = tree.new(updated)
 	}
 	return true, nil
+}
+
+// get value by key
+func (tree *BTree) Get(key []byte) (val []byte, ok bool) {
+	if tree.root == 0 {
+		return nil, false
+	}
+	return nodeGetKey(tree, tree.get(tree.root), key)
 }
