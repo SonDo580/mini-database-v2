@@ -217,7 +217,7 @@ func updateOrRevert(db *KV, meta []byte) error {
 		// mark to rewrite on-disk meta page on later recovery
 		db.failed = true
 
-		// in-memory state is reverted
+		// in-memory state (root + page_count) is reverted
 		loadMeta(db, meta)
 
 		// discard temporaries

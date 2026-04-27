@@ -21,7 +21,7 @@ func createFileSync(file string) (fd int, err error) {
 	// . use openat() to guaranteed the file is from the same directory we opened,
 	//   in case the directory path is replaced in between (race condition)
 	flags = os.O_RDWR | os.O_CREATE
-	fd, err = syscall.Openat(dirfd, path.Base(file), flags, 0x644)
+	fd, err = syscall.Openat(dirfd, path.Base(file), flags, 0o644)
 	if err != nil {
 		return -1, fmt.Errorf("open file: %w", err)
 	}

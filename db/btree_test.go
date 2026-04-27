@@ -10,15 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type C struct { // context
+type BTreeTestCtx struct {
 	tree  BTree
 	pages map[uint64]BNode  // simulate pages in memory
 	ref   map[string]string // reference data (track inserted KVs)
 }
 
-func newC() *C {
+func newBTreeTestCtx() *BTreeTestCtx {
 	pages := map[uint64]BNode{}
-	return &C{
+	return &BTreeTestCtx{
 		tree: BTree{
 			get: func(ptr uint64) []byte {
 				node, ok := pages[ptr]
@@ -42,13 +42,13 @@ func newC() *C {
 	}
 }
 
-func (c *C) add(key string, val string) {
+func (c *BTreeTestCtx) add(key string, val string) {
 	err := c.tree.Insert([]byte(key), []byte(val))
 	assert(err == nil)
 	c.ref[key] = val
 }
 
-func (c *C) del(key string) bool {
+func (c *BTreeTestCtx) del(key string) bool {
 	delete(c.ref, key)
 	deleted, err := c.tree.Delete([]byte(key))
 	assert(err == nil)
@@ -56,7 +56,7 @@ func (c *C) del(key string) bool {
 }
 
 // dump KVs in tree
-func (c *C) dump() ([]string, []string) {
+func (c *BTreeTestCtx) dump() ([]string, []string) {
 	keys := []string{}
 	vals := []string{}
 
@@ -84,26 +84,7 @@ func (c *C) dump() ([]string, []string) {
 	return keys[1:], vals[1:]
 }
 
-// satisfy Go's sort.Interface
-type sortIF struct {
-	len  int
-	less func(i, j int) bool
-	swap func(i, j int)
-}
-
-func (self sortIF) Len() int {
-	return self.len
-}
-
-func (self sortIF) Less(i, j int) bool {
-	return self.less(i, j)
-}
-
-func (self sortIF) Swap(i, j int) {
-	self.swap(i, j)
-}
-
-func (c *C) verify(t *testing.T) {
+func (c *BTreeTestCtx) verify(t *testing.T) {
 	keys, vals := c.dump()
 
 	// reference
@@ -151,25 +132,8 @@ func (c *C) verify(t *testing.T) {
 	nodeVerify(c.tree.get(c.tree.root))
 }
 
-/*
-"finalization mix" function used in MurmurHash3 (a 32-bit non-cryptographic hash function)
-to ensure the final hash bits are well-distributed and have high entropy.
-
-in short: small change in input produces drastically different output.
-
-why it works: TODO
-*/
-func fmix32(h uint32) uint32 {
-	h ^= h >> 16
-	h *= 0x85ebca6b
-	h ^= h >> 13
-	h *= 0xc2b2ae35
-	h ^= h >> 16
-	return h
-}
-
 func commonTestBasic(t *testing.T, hasher func(uint32) uint32) {
-	c := newC()
+	c := newBTreeTestCtx()
 	c.add("k", "v")
 	c.verify(t)
 
@@ -232,7 +196,7 @@ func TestBTreeBasicRand(t *testing.T) {
 }
 
 func TestBTreeRandLength(t *testing.T) {
-	c := newC()
+	c := newBTreeTestCtx()
 	for i := 0; i < 2000; i++ {
 		klen := fmix32(uint32(2*i)) % BTREE_MAX_KEY_SIZE
 		vlen := fmix32(uint32(2*i+1)) % BTREE_MAX_VAL_SIZE
@@ -250,7 +214,7 @@ func TestBTreeRandLength(t *testing.T) {
 
 func TestBTreeIncLength(t *testing.T) {
 	for l := 1; l < BTREE_MAX_KEY_SIZE+BTREE_MAX_VAL_SIZE; l++ {
-		c := newC()
+		c := newBTreeTestCtx()
 
 		klen := l
 		if klen > BTREE_MAX_KEY_SIZE {
