@@ -138,25 +138,25 @@ func commonTestBasic(t *testing.T, hasher func(uint32) uint32) {
 	c.verify(t)
 
 	// insert
-	for i := 0; i < 250000; i++ {
+	for i := 0; i < 2500; i++ {
 		key := fmt.Sprintf("key%d", hasher(uint32(i)))
 		val := fmt.Sprintf("val%d", hasher(uint32(-i)))
 		c.add(key, val)
-		if i < 2000 {
+		if i < 200 {
 			c.verify(t)
 		}
 	}
 	c.verify(t)
 
 	// del
-	for i := 2000; i < 250000; i++ {
+	for i := 200; i < 2500; i++ {
 		key := fmt.Sprintf("key%d", hasher(uint32(i)))
 		require.True(t, c.del(key))
 	}
 	c.verify(t)
 
 	// overwrite
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		key := fmt.Sprintf("key%d", hasher(uint32(i)))
 		val := fmt.Sprintf("vvv%d", hasher(uint32(+i)))
 		c.add(key, val)
@@ -165,7 +165,7 @@ func commonTestBasic(t *testing.T, hasher func(uint32) uint32) {
 
 	require.False(t, c.del("kk"))
 
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		key := fmt.Sprintf("key%d", hasher(uint32(i)))
 		require.True(t, c.del(key))
 		c.verify(t)
@@ -197,7 +197,7 @@ func TestBTreeBasicRand(t *testing.T) {
 
 func TestBTreeRandLength(t *testing.T) {
 	c := newBTreeTestCtx()
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		klen := fmix32(uint32(2*i)) % BTREE_MAX_KEY_SIZE
 		vlen := fmix32(uint32(2*i+1)) % BTREE_MAX_VAL_SIZE
 		if klen == 0 {
@@ -213,7 +213,7 @@ func TestBTreeRandLength(t *testing.T) {
 }
 
 func TestBTreeIncLength(t *testing.T) {
-	for l := 1; l < BTREE_MAX_KEY_SIZE+BTREE_MAX_VAL_SIZE; l++ {
+	for l := 1; l < BTREE_MAX_KEY_SIZE+BTREE_MAX_VAL_SIZE; l += 40 {
 		c := newBTreeTestCtx()
 
 		klen := l

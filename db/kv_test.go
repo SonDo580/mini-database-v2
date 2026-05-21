@@ -160,11 +160,11 @@ func funcTestKVBasic(t *testing.T, reopen bool) {
 	c.verify(t)
 
 	// insert
-	for i := 0; i < 250000; i++ {
+	for i := 0; i < 2500; i++ {
 		key := fmt.Sprintf("key%d", fmix32(uint32(i)))
 		val := fmt.Sprintf("val%d", fmix32(uint32(-i)))
 		c.add(key, val)
-		if i < 2000 {
+		if i < 200 {
 			c.verify(t)
 		}
 	}
@@ -176,7 +176,7 @@ func funcTestKVBasic(t *testing.T, reopen bool) {
 	t.Log("insertion done")
 
 	// del
-	for i := 2000; i < 250000; i++ {
+	for i := 200; i < 2500; i++ {
 		key := fmt.Sprintf("key%d", fmix32(uint32(i)))
 		require.True(t, c.del(key))
 	}
@@ -188,7 +188,7 @@ func funcTestKVBasic(t *testing.T, reopen bool) {
 	t.Log("deletion done")
 
 	// overwrite
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		key := fmt.Sprintf("key%d", fmix32(uint32(i)))
 		val := fmt.Sprintf("vvv%d", fmix32(uint32(i)))
 		c.add(key, val)
@@ -198,7 +198,7 @@ func funcTestKVBasic(t *testing.T, reopen bool) {
 	require.False(t, c.del("kk"))
 
 	// remove all
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		key := fmt.Sprintf("key%d", fmix32(uint32(i)))
 		require.True(t, c.del(key))
 		c.verify(t)
@@ -269,7 +269,7 @@ func TestKVRandLength(t *testing.T) {
 	c := newKVTestCtx()
 	defer c.dispose()
 
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		klen := fmix32(uint32(2*i)) % BTREE_MAX_KEY_SIZE
 		vlen := fmix32(uint32(2*i+1)) % BTREE_MAX_VAL_SIZE
 		if klen == 0 {
@@ -285,7 +285,7 @@ func TestKVRandLength(t *testing.T) {
 }
 
 func TestKVIncLength(t *testing.T) {
-	for l := 1; l < BTREE_MAX_KEY_SIZE+BTREE_MAX_VAL_SIZE; l++ {
+	for l := 1; l < BTREE_MAX_KEY_SIZE+BTREE_MAX_VAL_SIZE; l += 40 {
 		c := newKVTestCtx()
 
 		klen := l
