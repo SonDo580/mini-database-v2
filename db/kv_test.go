@@ -20,11 +20,12 @@ func fsyncSkip(int) error {
 	return nil
 }
 
-// calls to 'db.Fsync' return errors based on errList
+// Calls to db.Fsync() return errors based on 'errList'
 //   - return error if the head element is not 0
-//   - the returned function retains access to errList, which are mutated in every call (cut head)
+//   - the returned function retains access to 'errList' (closure),
+//     which are mutated in every call (cut head)
 //
-// see 'updateFile' and 'updateOrRevert' for details
+// db.Fsync() is called by updateFile() and updateOrRevert()
 func fsyncErr(errList ...int) func(int) error {
 	return func(int) error {
 		fail := errList[0]

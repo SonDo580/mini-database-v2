@@ -37,15 +37,34 @@ File layout:
 - New nodes are appended like a log.
 
 Meta page (1st page):
-| sig | root_ptr | page_used |
-| 16B |    8B    |     8B    |
+| sig | root_ptr | page_used | (unused) |
+| 16B |    8B    |     8B    |			|
 . sig (signature): magic bytes to identify file type
 . root_ptr: pointer to the latest root node
 . page_used: number of pages
 
+OS background:
+- OS page is the minimum unit for mapping between virtual and physical address.
+- The virtual address space of a process is not fully backed by physical memory.
+  Part of that can be swapped to disk, and when the process tries to access it:
+  . the CPU triggers a page fault, which hands control to the OS.
+  . the OS reads the swapped data into physical memory,
+    remaps the virtual address to it,
+	then hands control back to the process.
+  . the process resumes with the virtual address mapped to real RAM.
+- The CPU also sets a dirty bit when the process modifies a page,
+  so the OS can write the page back to disk later;
+  fsync() is used to request and wait for the IO.
+
 mmap():
-- a way to read/write a file as if it's an in-memory buffer
-- background: OS page, virtual/physical address, swapped data, page fault, dirty bit
+- a way to read/write a file as if it's an in-memory buffer;
+  disk IO is implicit and automatic with mmap().
+- How it works (see OS background notes):
+  . the process gets an address range from mmap().
+  . read: when the process touches a page in that range, it may triggers page fault,
+    and the OS reads data into page cache and remaps the page to the cache.
+  . write: write to the page cache, set the dirty bit,
+    and the OS will write the page to disk later (automatic, or when fsync()).
 */
 
 // 'BTree.get', read a page
@@ -81,8 +100,12 @@ func writePages(db *KV) error {
 	offset := int64(db.page.flushed * BTREE_PAGE_SIZE)
 	if _, err := unix.Pwritev(db.fd, db.page.temp, offset); err != nil {
 		// pwritev() is a variant of write() that accept offset and multiple input buffers
-		// . we have to control the offset since we also need to write meta page.
-		//   (write() advances the file descriptor's cursor)
+		// . control the offset since we also need to write meta page.
+		//   (write() advances its single cursor on the file,
+		//    we would need to seek back to 0 to write meta page)
+		// . write multiple pages efficiently
+		//   (with write(), we would have to call it for each individual page,
+		//    or allocate a giant temporary buffer)
 		return err
 	}
 
@@ -118,16 +141,14 @@ func extendMmap(db *KV, size int) error {
 	return nil
 }
 
-const DB_SIG = "RelationalDB0123" // 16-byte string to identify file type
-
 // | sig | root_ptr | page_used |
 // | 16B |    8B    |     8B    |
+const DB_SIG = "RelationalDB0123" // 16-byte string to identify file type
 
 // load DB metadata
 func loadMeta(db *KV, data []byte) {
 	db.tree.root = binary.LittleEndian.Uint64(data[16:])
 	db.page.flushed = binary.LittleEndian.Uint64(data[24:])
-
 }
 
 // save DB metadata
