@@ -1,2 +1,5 @@
 **/*.db
 **/*debug*
+
+# incomplete, handle later
+db/*_test.go

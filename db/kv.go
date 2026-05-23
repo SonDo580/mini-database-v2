@@ -13,19 +13,21 @@ import (
 // KV store with a copy-on-write B+tree backed by a file
 type KV struct {
 	Path  string          // file name
-	FSync func(int) error // overridable; for testing
+	Fsync func(int) error // overridable; for testing
 
 	// ===== internals =====
 
 	fd   int // file descriptor
 	tree BTree
+	free FreeList
 	mmap struct {
 		total  int      // mmap size, can be larger than file size
 		chunks [][]byte // multiple mmaps, can be non-continuous
 	}
 	page struct {
-		flushed uint64   // DB size in number of pages
-		temp    [][]byte // newly allocated pages
+		flushed uint64            // DB size in number of pages
+		nappend uint64            // number of pages to be appended
+		updates map[uint64][]byte // pending updates, including appended pages
 	}
 	failed bool // did the last update failed?
 }
@@ -35,13 +37,6 @@ File layout:
 - The DB is a single file divided into pages.
 - Each page is a B+tree node, except for the 1st page.
 - New nodes are appended like a log.
-
-Meta page (1st page):
-| sig | root_ptr | page_used | (unused) |
-| 16B |    8B    |     8B    |			|
-. sig (signature): magic bytes to identify file type
-. root_ptr: pointer to the latest root node
-. page_used: number of pages
 
 OS background:
 - OS page is the minimum unit for mapping between virtual and physical address.
@@ -69,6 +64,14 @@ mmap():
 
 // 'BTree.get', read a page
 func (db *KV) pageRead(ptr uint64) []byte {
+	assert(ptr < db.page.flushed+db.page.nappend)
+	if node, ok := db.page.updates[ptr]; ok {
+		return node // pending update
+	}
+	return db.pageReadFile(ptr)
+}
+
+func (db *KV) pageReadFile(ptr uint64) []byte {
 	start := uint64(0)
 	for _, chunk := range db.mmap.chunks {
 		end := start + uint64(len(chunk))/BTREE_PAGE_SIZE
@@ -81,37 +84,58 @@ func (db *KV) pageRead(ptr uint64) []byte {
 	panic("bad ptr")
 }
 
-// 'BTree.new', allocate a new page
+// 'BTree.new', allocate a free page
+func (db *KV) pageAlloc(node []byte) uint64 {
+	if ptr := db.free.PopHead(); ptr != 0 { // try free-list
+		db.page.updates[ptr] = node
+		return ptr
+	}
+	return db.pageAppend(node) // append
+}
+
+// 'FreeList.new', append a new page
 func (db *KV) pageAppend(node []byte) uint64 {
-	ptr := db.page.flushed + uint64(len(db.page.temp)) // append
-	db.page.temp = append(db.page.temp, node)
+	assert(len(node) == BTREE_PAGE_SIZE)
+	ptr := db.page.flushed + db.page.nappend
+	db.page.nappend++
+	assert(db.page.updates[ptr] == nil)
+	db.page.updates[ptr] = node
 	return ptr
+}
+
+// 'FreeList.set', returns a writable copy to capture in-place updates
+func (db *KV) pageWrite(ptr uint64) []byte {
+	assert(ptr < db.page.flushed+db.page.nappend)
+	if node, ok := db.page.updates[ptr]; ok {
+		return node // pending update
+	}
+
+	node := make([]byte, BTREE_PAGE_SIZE)
+	copy(node, db.pageReadFile(ptr)) // initialized from file
+	db.page.updates[ptr] = node
+	return node
 }
 
 // write (append) new pages after B+tree updates
 func writePages(db *KV) error {
 	// extend mmap if needed
-	size := (int(db.page.flushed) + len(db.page.temp)) * BTREE_PAGE_SIZE
+	size := (int(db.page.flushed + db.page.nappend)) * BTREE_PAGE_SIZE
 	if err := extendMmap(db, size); err != nil {
 		return err
 	}
 
 	// write data pages to the file
-	offset := int64(db.page.flushed * BTREE_PAGE_SIZE)
-	if _, err := unix.Pwritev(db.fd, db.page.temp, offset); err != nil {
-		// pwritev() is a variant of write() that accept offset and multiple input buffers
-		// . control the offset since we also need to write meta page.
-		//   (write() advances its single cursor on the file,
-		//    we would need to seek back to 0 to write meta page)
-		// . write multiple pages efficiently
-		//   (with write(), we would have to call it for each individual page,
-		//    or allocate a giant temporary buffer)
-		return err
+	for ptr, node := range db.page.updates {
+		offset := int64(ptr * BTREE_PAGE_SIZE)
+		if _, err := unix.Pwrite(db.fd, node, offset); err != nil {
+			return err
+		}
 	}
 
 	// discard in-memory data
-	db.page.flushed += uint64(len(db.page.temp))
-	db.page.temp = db.page.temp[:0]
+	db.page.flushed += db.page.nappend
+	db.page.nappend = 0
+	db.page.updates = map[uint64][]byte{}
 	return nil
 }
 
@@ -141,45 +165,72 @@ func extendMmap(db *KV, size int) error {
 	return nil
 }
 
-// | sig | root_ptr | page_used |
-// | 16B |    8B    |     8B    |
+/*
+Meta page (page 0):
+| sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | (unused) |
+| 16B |    8B    |     8B    | 8B		 | 8B		| 8B		| 8B	   | ...	  |
+. sig (signature): magic bytes to identify file type
+. root_ptr: pointer to the latest root node
+. page_used: number of pages
+. head/tail page/seq: see FreeList struct
+*/
+
 const DB_SIG = "RelationalDB0123" // 16-byte string to identify file type
 
 // load DB metadata
 func loadMeta(db *KV, data []byte) {
-	db.tree.root = binary.LittleEndian.Uint64(data[16:])
-	db.page.flushed = binary.LittleEndian.Uint64(data[24:])
+	db.tree.root = binary.LittleEndian.Uint64(data[16:24])
+	db.page.flushed = binary.LittleEndian.Uint64(data[24:32])
+	db.free.headPage = binary.LittleEndian.Uint64(data[32:40])
+	db.free.headSeq = binary.LittleEndian.Uint64(data[40:48])
+	db.free.tailPage = binary.LittleEndian.Uint64(data[48:56])
+	db.free.tailSeq = binary.LittleEndian.Uint64(data[56:64])
 }
 
 // save DB metadata
 func saveMeta(db *KV) []byte {
-	var data [32]byte
+	var data [64]byte
 	copy(data[:16], []byte(DB_SIG))
-	binary.LittleEndian.PutUint64(data[16:], db.tree.root)
-	binary.LittleEndian.PutUint64(data[24:], db.page.flushed)
+	binary.LittleEndian.PutUint64(data[16:24], db.tree.root)
+	binary.LittleEndian.PutUint64(data[24:32], db.page.flushed)
+	binary.LittleEndian.PutUint64(data[32:40], db.free.headPage)
+	binary.LittleEndian.PutUint64(data[40:48], db.free.headSeq)
+	binary.LittleEndian.PutUint64(data[48:56], db.free.tailPage)
+	binary.LittleEndian.PutUint64(data[56:64], db.free.tailSeq)
 	return data[:]
 }
 
 // read meta page (root + metadata)
 func readRoot(db *KV, fileSize int64) error {
-	if fileSize%BTREE_PAGE_SIZE != 0 {
-		return errors.New("file is not multiple of pages")
+	if fileSize == 0 { // empty file
+		// reserve 2 pages: meta page and a free-list node
+		db.page.flushed = 2
+		// add initial node to free-list (ensure at least 1 node)
+		db.free.headPage = 1
+		db.free.tailPage = 1
+		return nil // meta page will be written in the 1st update
 	}
 
-	if fileSize == 0 { // empty file
-		db.page.flushed = 1 // meta page is initialized on 1st write
-		return nil
+	if fileSize%BTREE_PAGE_SIZE != 0 {
+		return errors.New("file is not multiple of pages")
 	}
 
 	// read
 	data := db.mmap.chunks[0]
 	loadMeta(db, data)
 
+	// initialize free-list
+	db.free.SetMaxSeq()
+
 	// verify
 	bad := !bytes.Equal([]byte(DB_SIG), data[:16])
-	bad = bad || !(0 < db.tree.root && db.tree.root < db.page.flushed)
+
 	maxPages := uint64(fileSize / BTREE_PAGE_SIZE)
 	bad = bad || !(0 < db.page.flushed && db.page.flushed <= maxPages)
+	bad = bad || !(0 < db.tree.root && db.tree.root < db.page.flushed)
+	bad = bad || !(0 < db.free.headPage && db.free.headPage < db.page.flushed)
+	bad = bad || !(0 < db.free.tailPage && db.free.tailPage < db.page.flushed)
+
 	if bad {
 		return errors.New("bad meta page")
 	}
@@ -196,25 +247,28 @@ func updateRoot(db *KV) error {
 
 // persist changes to DB file
 func updateFile(db *KV) error {
-	// 1. Write new nodes
+	// 1. write new nodes
 	if err := writePages(db); err != nil {
 		return err
 	}
 
 	// 2. fsync to enforce order between 1 and 3
-	if err := db.FSync(db.fd); err != nil {
+	if err := db.Fsync(db.fd); err != nil {
 		return err
 	}
 
-	// 3. Update the root pointer (and metadata) atomically
+	// 3. update the root pointer (and metadata) atomically
 	if err := updateRoot(db); err != nil {
 		return err
 	}
 
 	// 4. fsync to make everything persistent
-	if err := db.FSync(db.fd); err != nil {
+	if err := db.Fsync(db.fd); err != nil {
 		return err
 	}
+
+	// prepare the free-list for next update
+	db.free.SetMaxSeq()
 
 	return nil
 }
@@ -226,7 +280,7 @@ func updateOrRevert(db *KV, meta []byte) error {
 		if _, err := syscall.Pwrite(db.fd, meta, 0); err != nil {
 			return fmt.Errorf("rewrite meta page: %w", err)
 		}
-		if err := db.FSync(db.fd); err != nil {
+		if err := db.Fsync(db.fd); err != nil {
 			return err
 		}
 		db.failed = false
@@ -242,21 +296,29 @@ func updateOrRevert(db *KV, meta []byte) error {
 		loadMeta(db, meta)
 
 		// discard temporaries
-		db.page.temp = db.page.temp[:0]
+		db.page.nappend = 0
+		db.page.updates = map[uint64][]byte{}
 	}
 	return err
 }
 
 // open or create a DB file
 func (db *KV) Open() (err error) {
-	if db.FSync == nil {
-		db.FSync = syscall.Fsync
+	if db.Fsync == nil {
+		db.Fsync = syscall.Fsync
 	}
 
+	db.page.updates = map[uint64][]byte{}
+
 	// B+tree callbacks
-	db.tree.get = db.pageRead       // read a page
-	db.tree.new = db.pageAppend     // append a page
-	db.tree.del = func(u uint64) {} // TODO
+	db.tree.get = db.pageRead      // read a page
+	db.tree.new = db.pageAlloc     // reuse from free-list or append
+	db.tree.del = db.free.PushTail // freed pages go to free-list
+
+	// free-list callbacks
+	db.free.get = db.pageRead   // read a page
+	db.free.new = db.pageAppend // append a page
+	db.free.set = db.pageWrite  // in-place updates
 
 	// open or create the DB file
 	if db.fd, err = createFileSync(db.Path); err != nil {
