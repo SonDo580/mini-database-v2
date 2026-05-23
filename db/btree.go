@@ -340,22 +340,21 @@ func treeUpdate(req *UpdateReq, node BNode) BNode {
 			req.Updated = true
 			req.Added = true
 		}
+		return new
 	case BNODE_NODE: // internal node
-		nodeUpdate(req, new, node, idx)
+		return nodeUpdate(req, new, node, idx)
 	default:
 		panic("invalid node type!")
 	}
-
-	return new
 }
 
 // insert/update a key at an internal node; part of treeUpdate()
-func nodeUpdate(req *UpdateReq, new BNode, node BNode, idx uint16) {
+func nodeUpdate(req *UpdateReq, new BNode, node BNode, idx uint16) BNode {
 	// recursive insert/update to the kid node
 	kptr := node.getPtr(idx)
 	updated := treeUpdate(req, req.tree.get(kptr))
 	if len(updated) == 0 { // not updated
-		return
+		return BNode{}
 	}
 
 	// split (if needed) after insertion
@@ -365,8 +364,9 @@ func nodeUpdate(req *UpdateReq, new BNode, node BNode, idx uint16) {
 	req.tree.del(kptr)
 
 	// point to the new kid(s) after splitting
-	// propagate up the parent chain
 	nodeReplaceKidN(req.tree, new, node, idx, split[:nsplit]...)
+
+	return new
 }
 
 // leaf node: remove a key

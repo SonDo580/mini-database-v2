@@ -338,7 +338,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 	ok, err = dbGet(db, TDEF_META, metaRec)
 	assert(err == nil)
 	if ok {
-		tdef.Prefix = binary.BigEndian.Uint32(metaRec.Get("val").Str)
+		tdef.Prefix = binary.LittleEndian.Uint32(metaRec.Get("val").Str)
 		assert(tdef.Prefix > TABLE_PREFIX_MIN)
 	} else {
 		tdef.Prefix = TABLE_PREFIX_MIN
@@ -436,7 +436,7 @@ func (db *DB) Upsert(table string, rec Record) (bool, error) {
 // delete a row by primary key
 func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	// reorder record to match defined column order
-	values, err := checkRecord(tdef, rec, len(tdef.Cols))
+	values, err := checkRecord(tdef, rec, tdef.PKeys)
 	if err != nil {
 		return false, nil
 	}
