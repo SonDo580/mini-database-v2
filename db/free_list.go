@@ -14,7 +14,7 @@ type LNode []byte
 const FREE_LIST_HEADER = 8
 const FREE_LIST_CAP = (BTREE_PAGE_SIZE - FREE_LIST_HEADER) / 8
 
-// ===== getters & setters =====
+// === getters & setters ===
 
 func (node LNode) getNext() uint64 {
 	return binary.LittleEndian.Uint64(node[0:8])
@@ -36,20 +36,20 @@ func (node LNode) setPtr(idx int, ptr uint64) {
 }
 
 type FreeList struct {
-	// ===== callbacks for managing on-disk pages =====
+	// === callbacks for managing on-disk pages ===
 
 	get func(uint64) []byte // read a page
 	new func([]byte) uint64 // append a new page
 	set func(uint64) []byte // returns a writable buffer to capture in-place update
 
-	// ===== persisted data in meta page =====
+	// === persisted data in meta page ===
 
 	headPage uint64 // pointer to list head node
 	headSeq  uint64 // monotonic sequence number to index into list head
 	tailPage uint64
 	tailSeq  uint64
 
-	// ===== in-memory states =====
+	// === in-memory states ===
 
 	maxSeq uint64 // saved 'tailSeq' to prevent consuming newly added items
 }

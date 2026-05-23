@@ -10,12 +10,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// KV store with a copy-on-write B+tree backed by a file
+// KV store backed by a file
 type KV struct {
-	Path  string          // file name
+	Path  string
 	Fsync func(int) error // overridable; for testing
 
-	// ===== internals =====
+	// === internals ===
 
 	fd   int // file descriptor
 	tree BTree
@@ -357,25 +357,30 @@ func (db *KV) Close() {
 	_ = syscall.Close(db.fd)
 }
 
-// ===== Interface =====
+// === Interface ===
 
 func (db *KV) Get(key []byte) (val []byte, ok bool) {
 	return db.tree.Get(key)
 }
 
-func (db *KV) Set(key []byte, val []byte) error {
-	meta := saveMeta(db) // save in-memory state before update
-	if err := db.tree.Insert(key, val); err != nil {
-		return err
-	}
-	return updateOrRevert(db, meta)
+func (db *KV) Set(key []byte, val []byte) (bool, error) {
+	return db.Update(&UpdateReq{Key: key, Val: val})
 }
 
-func (db *KV) Delete(key []byte) (deleted bool, err error) {
+func (db *KV) Update(req *UpdateReq) (bool, error) {
 	meta := saveMeta(db) // save in-memory state before update
-	if deleted, err = db.tree.Delete(key); !deleted {
+	if updated, err := db.tree.Update(req); !updated {
 		return false, err
 	}
-	err = updateOrRevert(db, meta)
+	err := updateOrRevert(db, meta)
+	return err == nil, err
+}
+
+func (db *KV) Del(key []byte) (bool, error) {
+	meta := saveMeta(db) // save in-memory state before update
+	if deleted, err := db.tree.Delete(key); !deleted {
+		return false, err
+	}
+	err := updateOrRevert(db, meta)
 	return err == nil, err
 }

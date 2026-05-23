@@ -51,7 +51,7 @@ const (
 
 type BNode []byte // can be dumped to disk
 
-// ===== header =====
+// === header ===
 
 func (node BNode) btype() uint16 {
 	return binary.LittleEndian.Uint16(node[0:2])
@@ -64,7 +64,7 @@ func (node BNode) setHeader(btype uint16, nkeys uint16) {
 	binary.LittleEndian.PutUint16(node[2:4], nkeys)
 }
 
-// ===== child pointers =====
+// === child pointers ===
 
 func (node BNode) getPtr(idx uint16) uint64 {
 	assert(idx < node.nkeys())
@@ -77,7 +77,7 @@ func (node BNode) setPtr(idx uint16, val uint64) {
 	binary.LittleEndian.PutUint64(node[pos:], val)
 }
 
-// ===== offsets =====
+// === offsets ===
 
 func offsetPos(node BNode, idx uint16) uint16 {
 	assert(1 <= idx && idx <= node.nkeys()) // allow offset just past the end
@@ -95,7 +95,7 @@ func (node BNode) setOffset(idx uint16, offset uint16) {
 	binary.LittleEndian.PutUint16(node[pos:], offset)
 }
 
-// ===== KV =====
+// === KV ===
 
 func (node BNode) kvPos(idx uint16) uint16 {
 	assert(idx <= node.nkeys()) // allow offset just past the end
@@ -143,7 +143,7 @@ func (node BNode) nbytes() uint16 {
 type BTree struct {
 	root uint64 // root pointer (a nonzero page number)
 
-	// ===== callbacks for managing on-disk pages =====
+	// === callbacks for managing on-disk pages ===
 
 	get func(uint64) []byte // read data from a page number
 	new func([]byte) uint64 // allocate a new page with data
@@ -291,22 +291,57 @@ func nodeReplaceKidN(
 	nodeAppendRange(new, old, idx+uint16(len(kids)), idx+1, old.nkeys()-(idx+1))
 }
 
-// insert a KV into a node; return updated node (copied)
-func treeInsert(
-	tree *BTree, node BNode, key []byte, val []byte,
-) BNode {
+// update modes
+const (
+	MODE_UPSERT      = 0
+	MODE_UPDATE_ONLY = 1
+	MODE_INSERT_ONLY = 2
+)
+
+type UpdateReq struct {
+	tree *BTree
+
+	// === in ====
+
+	Key  []byte
+	Val  []byte
+	Mode int
+
+	// === out ===
+
+	Added   bool   // added a new key
+	Updated bool   // added a new key or updated an old key
+	Old     []byte // value before update
+
+}
+
+// insert/update a key at a node; return updated node (copied)
+func treeUpdate(req *UpdateReq, node BNode) BNode {
 	new := BNode(make([]byte, 2*BTREE_PAGE_SIZE)) // allow exceeding 1 page temporarily
-	idx := nodeLookupLE(node, key)                // node.getKey(idx) <= key
+	idx := nodeLookupLE(node, req.Key)            // node.getKey(idx) <= key
 
 	switch node.btype() {
 	case BNODE_LEAF: // leaf node
-		if bytes.Equal(key, node.getKey(idx)) { // key found -> update
-			leafUpdate(new, node, idx, key, val)
-		} else { // key not found -> insert
-			leafInsert(new, node, idx+1, key, val)
+		if bytes.Equal(req.Key, node.getKey(idx)) { // key found
+			if req.Mode == MODE_INSERT_ONLY {
+				return BNode{}
+			}
+			if bytes.Equal(req.Val, node.getVal(idx)) {
+				return BNode{}
+			}
+			leafUpdate(new, node, idx, req.Key, req.Val)
+			req.Updated = true
+			req.Old = node.getVal(idx)
+		} else { // key not found
+			if req.Mode == MODE_UPDATE_ONLY {
+				return BNode{}
+			}
+			leafInsert(new, node, idx+1, req.Key, req.Val)
+			req.Updated = true
+			req.Added = true
 		}
 	case BNODE_NODE: // internal node
-		nodeInsert(tree, new, node, idx, key, val)
+		nodeUpdate(req, new, node, idx)
 	default:
 		panic("invalid node type!")
 	}
@@ -314,24 +349,24 @@ func treeInsert(
 	return new
 }
 
-// insert a KV to an internal node; part of treeInsert()
-func nodeInsert(
-	tree *BTree, new BNode, node BNode, idx uint16,
-	key []byte, val []byte,
-) {
-	// recursive insertion to the kid node
+// insert/update a key at an internal node; part of treeUpdate()
+func nodeUpdate(req *UpdateReq, new BNode, node BNode, idx uint16) {
+	// recursive insert/update to the kid node
 	kptr := node.getPtr(idx)
-	knode := treeInsert(tree, tree.get(kptr), key, val)
+	updated := treeUpdate(req, req.tree.get(kptr))
+	if len(updated) == 0 { // not updated
+		return
+	}
 
 	// split (if needed) after insertion
-	nsplit, split := nodeSplit3(knode)
+	nsplit, split := nodeSplit3(updated)
 
 	// deallocate the old kid node
-	tree.del(kptr)
+	req.tree.del(kptr)
 
 	// point to the new kid(s) after splitting
 	// propagate up the parent chain
-	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
+	nodeReplaceKidN(req.tree, new, node, idx, split[:nsplit]...)
 }
 
 // leaf node: remove a key
@@ -472,13 +507,17 @@ func nodeGetKey(tree *BTree, node BNode, key []byte,
 	}
 }
 
-// ===== interface =====
+// === interface ===
+
+func (tree *BTree) Upsert(key []byte, val []byte) (bool, error) {
+	return tree.Update(&UpdateReq{Key: key, Val: val})
+}
 
 // insert new key or update an existing key
-func (tree *BTree) Insert(key []byte, val []byte) error {
+func (tree *BTree) Update(req *UpdateReq) (bool, error) {
 	// check limit imposed by node format
-	if err := checkLimit(key, val); err != nil {
-		return err
+	if err := checkLimit(req.Key, req.Val); err != nil {
+		return false, err
 	}
 
 	// create root node if tree is empty
@@ -488,18 +527,23 @@ func (tree *BTree) Insert(key []byte, val []byte) error {
 		// nodeLookupLE can return -1 if key < node's range
 		// -> insert an empty key so lookup always finds a position
 		root.setHeader(BNODE_LEAF, 2)
-		nodeAppendKV(root, 0, 0, nil, nil) // sentinel value
-		nodeAppendKV(root, 1, 0, key, val) // current KV
+		nodeAppendKV(root, 0, 0, nil, nil)         // sentinel value
+		nodeAppendKV(root, 1, 0, req.Key, req.Val) // current KV
 
 		tree.root = tree.new(root)
-		return nil
+		req.Added = true
+		req.Updated = true
+		return true, nil
 	}
 
-	// insert the key
-	node := treeInsert(tree, tree.get(tree.root), key, val)
+	req.tree = tree
+	updated := treeUpdate(req, tree.get(tree.root))
+	if len(updated) == 0 { // not updated
+		return false, nil
+	}
 
 	// grow the tree if the root is split
-	nsplit, split := nodeSplit3(node)
+	nsplit, split := nodeSplit3(updated)
 	tree.del(tree.root)
 	if nsplit > 1 { // root was split, add a new level
 		root := BNode(make([]byte, BTREE_PAGE_SIZE))
@@ -512,7 +556,8 @@ func (tree *BTree) Insert(key []byte, val []byte) error {
 	} else {
 		tree.root = tree.new(split[0])
 	}
-	return nil
+
+	return true, nil
 }
 
 // delete a key and returns whether the key exists
