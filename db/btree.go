@@ -217,7 +217,7 @@ func nodeLookupLE(node BNode, key []byte) uint16 {
 			break // found key > search_key
 		}
 	}
-	return i - 1 // can be -1
+	return i - 1 // can be -1 (overflow to UIN16_MAX)
 }
 
 // split an oversized node into 2 nodes
