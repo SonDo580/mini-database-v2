@@ -312,7 +312,6 @@ type UpdateReq struct {
 	Added   bool   // added a new key
 	Updated bool   // added a new key or updated an old key
 	Old     []byte // value before update
-
 }
 
 // insert/update a key at a node; return updated node (copied)
@@ -418,33 +417,46 @@ func shouldMerge(
 	return 0, BNode{}
 }
 
+type DeleteReq struct {
+	tree *BTree
+
+	// === in ===
+
+	Key []byte
+
+	// === out ===
+
+	Old []byte // deleted value
+}
+
 // delete a key from a node; return updated node (copied)
-func treeDelete(tree *BTree, node BNode, key []byte) BNode {
-	idx := nodeLookupLE(node, key) // node.getKey(idx) <= key
+func treeDelete(req *DeleteReq, node BNode) BNode {
+	idx := nodeLookupLE(node, req.Key) // node.getKey(idx) <= key
 	switch node.btype() {
 	case BNODE_LEAF:
-		if !bytes.Equal(key, node.getKey(idx)) { // key not found
+		if !bytes.Equal(req.Key, node.getKey(idx)) { // key not found
 			return BNode{}
 		}
 
 		// delete the key
+		req.Old = node.getVal(idx)
 		new := BNode(make([]byte, BTREE_PAGE_SIZE))
 		leafDelete(new, node, idx)
 		return new
 	case BNODE_NODE:
-		return nodeDelete(tree, node, idx, key)
+		return nodeDelete(req, node, idx)
 	default:
 		panic("invalid node type!")
 	}
 }
 
 // delete a key from an internal node; part of treeDelete()
-func nodeDelete(
-	tree *BTree, node BNode, idx uint16, key []byte,
-) BNode {
+func nodeDelete(req *DeleteReq, node BNode, idx uint16) BNode {
+	tree := req.tree
+
 	// recurse into the kid
 	kptr := node.getPtr(idx)
-	updated := treeDelete(tree, tree.get(kptr), key)
+	updated := treeDelete(req, tree.get(kptr))
 	if len(updated) == 0 { // key not found
 		return BNode{}
 	}
@@ -561,8 +573,8 @@ func (tree *BTree) Update(req *UpdateReq) (bool, error) {
 }
 
 // delete a key and returns whether the key exists
-func (tree *BTree) Delete(key []byte) (deleted bool, err error) {
-	if err := checkLimit(key, nil); err != nil {
+func (tree *BTree) Delete(req *DeleteReq) (deleted bool, err error) {
+	if err := checkLimit(req.Key, nil); err != nil {
 		return false, err
 	}
 
@@ -570,7 +582,8 @@ func (tree *BTree) Delete(key []byte) (deleted bool, err error) {
 		return false, nil
 	}
 
-	updated := treeDelete(tree, tree.get(tree.root), key)
+	req.tree = tree
+	updated := treeDelete(req, tree.get(tree.root))
 	if len(updated) == 0 { // key not found
 		return false, nil
 	}
