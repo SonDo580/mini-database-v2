@@ -115,7 +115,7 @@ const (
 	CMP_LE = -3 // <=
 )
 
-// check if current key and sought key satisfy 'cmp' relation
+// check if 'curr' and 'key' satisfy 'cmp' relation
 func cmpOK(curr []byte, cmp int, key []byte) bool {
 	r := bytes.Compare(curr, key)
 	switch cmp {

@@ -225,6 +225,10 @@ func unescapeString(in []byte) []byte {
 	return out
 }
 
+func decodeKey(in []byte, out []Value) {
+	decodeValues(in[4:], out) // skip table prefix
+}
+
 func decodeValues(in []byte, out []Value) {
 	for i := range out {
 		switch out[i].Type {
@@ -490,4 +494,95 @@ func (db *DB) Open() error {
 
 func (db *DB) Close() {
 	db.kv.Close()
+}
+
+// iterator for range queries
+type Scanner struct {
+	// === range ===
+
+	Cmp1 int // CMP_xx
+	Cmp2 int // CMP_xx
+	Key1 Record
+	Key2 Record
+
+	// === internal ===
+
+	tdef   *TableDef
+	iter   *BIter // underlying B+tree iterator
+	keyEnd []byte // encoded Key2
+}
+
+// currently within range?
+func (sc *Scanner) Valid() bool {
+	if !sc.iter.Valid() {
+		return false
+	}
+	key, _ := sc.iter.Deref()
+	return cmpOK(key, sc.Cmp2, sc.keyEnd)
+}
+
+// move the underlying B+tree iterator (in correct direction)
+func (sc *Scanner) Next() {
+	assert(sc.Valid())
+	if sc.Cmp1 > 0 { // >= or >
+		sc.iter.Next()
+	} else { // <= or <
+		sc.iter.Prev()
+	}
+}
+
+// return current row
+func (sc *Scanner) Deref(rec *Record) {
+	assert(sc.Valid())
+
+	// fetch KV
+	key, val := sc.iter.Deref()
+
+	// decode KV into columns
+	rec.Cols = sc.tdef.Cols
+	rec.Vals = rec.Vals[:0]
+	for _, type_ := range sc.tdef.Types {
+		rec.Vals = append(rec.Vals, Value{Type: type_})
+	}
+	decodeKey(key, rec.Vals[:sc.tdef.PKeys])
+	decodeValues(val, rec.Vals[sc.tdef.PKeys:])
+}
+
+func dbScan(db *DB, tdef *TableDef, req *Scanner) error {
+	// verify range
+	switch {
+	case req.Cmp1 > 0 && req.Cmp2 < 0: // scan forward
+	case req.Cmp2 > 0 && req.Cmp1 < 0: // scan backward
+	default:
+		return fmt.Errorf("bad range")
+	}
+	// !(key1 Cmp2 key2) -> scan 0 rows
+
+	req.tdef = tdef
+
+	// reorder input columns according to schemas
+	values1, err := checkRecord(tdef, req.Key1, tdef.PKeys)
+	if err != nil {
+		return err
+	}
+	values2, err := checkRecord(tdef, req.Key2, tdef.PKeys)
+	if err != nil {
+		return err
+	}
+
+	// encode primary key
+	keyStart := encodeKey(nil, tdef.Prefix, values1[:tdef.PKeys])
+	req.keyEnd = encodeKey(nil, tdef.Prefix, values2[:tdef.PKeys])
+
+	// seek to start key
+	req.iter = db.kv.tree.Seek(keyStart, req.Cmp1)
+	return nil
+}
+
+func (db *DB) Scan(table string, req *Scanner) error {
+	tdef := getTableDef(db, table)
+	if tdef == nil {
+		return fmt.Errorf("table not found: %s", table)
+	}
+	return dbScan(db, tdef, req)
 }
