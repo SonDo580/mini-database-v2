@@ -130,15 +130,45 @@ func encodeKey(out []byte, prefix uint32, vals []Value) []byte {
 
 }
 
+/*
+Order-preserving encoding:
+- To support range queries, serialized keys must be compared
+  with respect to their data types
+  . 1 way is to replace bytes.Compare() with a callback that decodes
+    and compares keys according to table schema. -> SLOW
+  . another way is to choose a special serialization format so that
+    the resulting bytes reflects the sort order.
+
+Numbers:
+- For unsigned:
+  . Put the higher bits first -> Big-Endian
+- For signed (2's-comp):
+  . Map positive values to upper half of the unsigned range,
+    negative values to lower half of the unsigned range
+    -> flip the MSB
+
+Strings:
+- Key can consists of multiple columns.
+  But simply concatenating creates ambiguity.
+  Example: ("a", "bc") vs. ("ab", "c")
+- There are 2 ways to encode strings with lengths
+  . Prepend the length -> DESTROY sort order
+  . Put a delimiter at the end (the NULL byte).
+    Above example (encoded): "a\x00bc\x00", "ab\x00c\x00".
+- With delimiter approach, the input cannot contain the delimiter
+  -> escape the delimiter
+  Use 0x01 as escaping byte, which must be escaped itself:
+  . 00 -> 01 01; 01 -> 01 02
+  . Note that the escape sequences still preserved sort order.
+*/
+
 // order-preserving encoding
-//
-// TODO: more detailed explanation
 func encodeValues(out []byte, vals []Value) []byte {
 	for _, v := range vals {
 		switch v.Type {
 		case TYPE_INT64:
 			var buf [8]byte
-			u := uint64(v.I64) + (1 << 63)        // flip the sign bit
+			u := uint64(v.I64) ^ (1 << 63)        // flip the sign bit
 			binary.BigEndian.PutUint64(buf[:], u) // big endian
 			out = append(out, buf[:]...)
 		case TYPE_BYTES:
@@ -152,8 +182,6 @@ func encodeValues(out []byte, vals []Value) []byte {
 }
 
 // escape the null byte (0); use 0x01 as escaping byte
-//
-// TODO: more detailed explanation
 func escapeString(in []byte) []byte {
 	toEscape := bytes.Count(in, []byte{0}) + bytes.Count(in, []byte{1})
 	if toEscape == 0 {
@@ -202,7 +230,7 @@ func decodeValues(in []byte, out []Value) {
 		switch out[i].Type {
 		case TYPE_INT64:
 			u := binary.BigEndian.Uint64(in[:8])
-			out[i].I64 = int64(u - (1 << 63))
+			out[i].I64 = int64(u ^ (1 << 63)) // flip the MSB back
 			in = in[8:]
 		case TYPE_BYTES:
 			idx := bytes.IndexByte(in, 0)
