@@ -111,7 +111,19 @@ func (db *KV) pageWrite(ptr uint64) []byte {
 	}
 
 	node := make([]byte, BTREE_PAGE_SIZE)
-	copy(node, db.pageReadFile(ptr)) // initialized from file
+
+	if !(db.page.flushed == 2 && ptr == 1) {
+		// initialized from file
+		copy(node, db.pageReadFile(ptr))
+	}
+	// else (db.page.flushed == 2 && ptr == 1):
+	// - Happen the 1st time the B+tree root is split.
+	//   The original root is deallocated and appended to free-list's tail
+	//   But page 1 (current tail page) has not been written to file after creating an empty DB
+	//   (see KV.Open() -> readRoot() -> fileSize == 0 case)
+	// - Both FreeList pages and B+tree pages are written to disk when commit.
+	//   (see KV.Commit() -> ... -> writePages() -> write db.page.updates)
+
 	db.page.updates[ptr] = node
 	return node
 }
@@ -355,32 +367,4 @@ func (db *KV) Close() {
 		assert(err == nil)
 	}
 	_ = syscall.Close(db.fd)
-}
-
-// === Interface ===
-
-func (db *KV) Get(key []byte) (val []byte, ok bool) {
-	return db.tree.Get(key)
-}
-
-func (db *KV) Set(key []byte, val []byte) (bool, error) {
-	return db.Update(&UpdateReq{Key: key, Val: val})
-}
-
-func (db *KV) Update(req *UpdateReq) (bool, error) {
-	meta := saveMeta(db) // save in-memory state before update
-	if updated, err := db.tree.Update(req); !updated {
-		return false, err
-	}
-	err := updateOrRevert(db, meta)
-	return err == nil, err
-}
-
-func (db *KV) Del(req *DeleteReq) (bool, error) {
-	meta := saveMeta(db) // save in-memory state before update
-	if deleted, err := db.tree.Delete(req); !deleted {
-		return false, err
-	}
-	err := updateOrRevert(db, meta)
-	return err == nil, err
 }

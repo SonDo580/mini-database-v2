@@ -17,6 +17,25 @@ type DB struct {
 	tables map[string]*TableDef // cached table schemas
 }
 
+// DB transaction
+type DBTX struct {
+	kv KVTX
+	db *DB
+}
+
+func (db *DB) Begin(tx *DBTX) {
+	tx.db = db
+	db.kv.Begin(&tx.kv)
+}
+
+func (db *DB) Commit(tx *DBTX) error {
+	return db.kv.Commit(&tx.kv)
+}
+
+func (db *DB) Abort(tx *DBTX) {
+	db.kv.Abort(&tx.kv)
+}
+
 // table schema
 type TableDef struct {
 	// === user-defined ===
@@ -293,21 +312,21 @@ var INTERNAL_TABLES map[string]*TableDef = map[string]*TableDef{
 }
 
 // get table schema by name
-func getTableDef(db *DB, name string) *TableDef {
-	// check internal schemas cache
+func getTableDef(tx *DBTX, name string) *TableDef {
+	// check internal tables
 	if tdef, ok := INTERNAL_TABLES[name]; ok {
 		return tdef
 	}
 
 	// check schemas cache
-	if tdef := db.tables[name]; tdef != nil {
+	if tdef := tx.db.tables[name]; tdef != nil {
 		return tdef
 	}
 
 	// query schemas table
-	tdef := getTableDefDB(db, name)
+	tdef := getTableDefDB(tx, name)
 	if tdef != nil { // cache if found
-		db.tables[name] = tdef
+		tx.db.tables[name] = tdef
 	}
 
 	return tdef
@@ -315,9 +334,9 @@ func getTableDef(db *DB, name string) *TableDef {
 }
 
 // get table schema from internal table '@table'
-func getTableDefDB(db *DB, name string) *TableDef {
+func getTableDefDB(tx *DBTX, name string) *TableDef {
 	rec := (&Record{}).AddStr("name", []byte(name))
-	ok, err := dbGet(db, TDEF_TABLE, rec)
+	ok, err := dbGet(tx, TDEF_TABLE, rec)
 	assert(err == nil)
 	if !ok {
 		return nil
@@ -331,7 +350,7 @@ func getTableDefDB(db *DB, name string) *TableDef {
 
 // get a row by primary key
 // ('rec' contains input primary key and also is output container)
-func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
+func dbGet(tx *DBTX, tdef *TableDef, rec *Record) (bool, error) {
 	// extract primary key
 	values, err := getValues(tdef, *rec, tdef.Indexes[0])
 	if err != nil {
@@ -345,7 +364,7 @@ func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
 		Key1: keyRec,
 		Key2: keyRec,
 	}
-	if err := dbScan(db, tdef, &sc); err != nil || !sc.Valid() {
+	if err := dbScan(tx, tdef, &sc); err != nil || !sc.Valid() {
 		return false, err
 	}
 	sc.Deref(rec)
@@ -353,12 +372,12 @@ func dbGet(db *DB, tdef *TableDef, rec *Record) (bool, error) {
 }
 
 // get a row by primary key
-func (db *DB) Get(table string, rec *Record) (bool, error) {
-	tdef := getTableDef(db, table)
+func (tx *DBTX) Get(table string, rec *Record) (bool, error) {
+	tdef := getTableDef(tx, table)
 	if tdef == nil {
 		return false, fmt.Errorf("table not found: %s", table)
 	}
-	return dbGet(db, tdef, rec)
+	return dbGet(tx, tdef, rec)
 }
 
 const TABLE_PREFIX_MIN = 100
@@ -423,7 +442,7 @@ func checkIndexCols(tdef *TableDef, index []string) ([]string, error) {
 }
 
 // create table
-func (db *DB) TableNew(tdef *TableDef) error {
+func (tx *DBTX) TableNew(tdef *TableDef) error {
 	// verify table schema & sanitize indexes
 	if err := tableDefChecK(tdef); err != nil {
 		return err
@@ -431,7 +450,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 
 	// check for existing table
 	tableRec := (&Record{}).AddStr("name", []byte(tdef.Name))
-	ok, err := dbGet(db, TDEF_TABLE, tableRec)
+	ok, err := dbGet(tx, TDEF_TABLE, tableRec)
 	assert(err == nil)
 	if ok {
 		return fmt.Errorf("table exists: %s", tdef.Name)
@@ -440,7 +459,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 	// get current prefix counter
 	var prefix uint32
 	metaRec := (&Record{}).AddStr("key", []byte("next_prefix"))
-	ok, err = dbGet(db, TDEF_META, metaRec)
+	ok, err = dbGet(tx, TDEF_META, metaRec)
 	assert(err == nil)
 	if ok {
 		prefix = binary.LittleEndian.Uint32(metaRec.Get("val").Str)
@@ -459,7 +478,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 	// set next prefix
 	nextPrefix := prefix + uint32(len(tdef.Indexes))
 	binary.LittleEndian.PutUint32(metaRec.Get("val").Str, nextPrefix)
-	_, err = dbUpdate(db, TDEF_META, &DBUpdateReq{Record: *metaRec})
+	_, err = dbUpdate(tx, TDEF_META, &DBUpdateReq{Record: *metaRec})
 	if err != nil {
 		return err
 	}
@@ -468,7 +487,7 @@ func (db *DB) TableNew(tdef *TableDef) error {
 	jsonTDef, err := json.Marshal(tdef)
 	assert(err == nil)
 	tableRec.AddStr("def", jsonTDef)
-	_, err = dbUpdate(db, TDEF_TABLE, &DBUpdateReq{Record: *tableRec})
+	_, err = dbUpdate(tx, TDEF_TABLE, &DBUpdateReq{Record: *tableRec})
 	return err
 }
 
@@ -485,7 +504,7 @@ type DBUpdateReq struct {
 
 // insert/update a row
 func dbUpdate(
-	db *DB, tdef *TableDef, dbReq *DBUpdateReq,
+	tx *DBTX, tdef *TableDef, dbReq *DBUpdateReq,
 ) (bool, error) {
 	// reorder columns to start with the primary key
 	cols := slices.Concat(tdef.Indexes[0], nonPrimaryKeyCols(tdef))
@@ -499,7 +518,7 @@ func dbUpdate(
 	key := encodeKey(nil, tdef.Prefixes[0], values[:npk])
 	val := encodeValues(nil, values[npk:])
 	req := UpdateReq{Key: key, Val: val, Mode: dbReq.Mode}
-	if _, err = db.kv.Update(&req); err != nil {
+	if _, err = tx.kv.Update(&req); err != nil {
 		return false, err
 	}
 	dbReq.Added, dbReq.Updated = req.Added, req.Updated
@@ -510,13 +529,13 @@ func dbUpdate(
 		decodeValues(req.Old, values[npk:])
 		oldRec := Record{Cols: cols, Vals: values}
 		// delete old index keys
-		if err = indexOp(db, tdef, INDEX_DEL, oldRec); err != nil {
+		if err = indexOp(tx, tdef, INDEX_DEL, oldRec); err != nil {
 			return false, err
 		}
 	}
 	if req.Updated {
 		// add new index keys
-		if err = indexOp(db, tdef, INDEX_ADD, dbReq.Record); err != nil {
+		if err = indexOp(tx, tdef, INDEX_ADD, dbReq.Record); err != nil {
 			return false, err
 		}
 	}
@@ -530,7 +549,7 @@ const (
 )
 
 // add or remove secondary index keys
-func indexOp(db *DB, tdef *TableDef, op int, rec Record) error {
+func indexOp(tx *DBTX, tdef *TableDef, op int, rec Record) error {
 	for i := 1; i < len(tdef.Indexes); i++ {
 		// index key
 		values, err := getValues(tdef, rec, tdef.Indexes[i])
@@ -540,11 +559,11 @@ func indexOp(db *DB, tdef *TableDef, op int, rec Record) error {
 		switch op {
 		case INDEX_ADD:
 			req := UpdateReq{Key: key, Val: nil}
-			_, err = db.kv.Update(&req)
+			_, err = tx.kv.Update(&req)
 			assert(err != nil || req.Added) // internal consistency
 		case INDEX_DEL:
 			deleted := false
-			deleted, err = db.kv.Del(&DeleteReq{Key: key})
+			deleted, err = tx.kv.Del(&DeleteReq{Key: key})
 			assert(err != nil || deleted) // internal consistency
 		default:
 			panic("unreachable")
@@ -558,37 +577,37 @@ func indexOp(db *DB, tdef *TableDef, op int, rec Record) error {
 }
 
 // insert/update a row
-func (db *DB) Set(table string, dbReq *DBUpdateReq) (bool, error) {
-	tdef := getTableDef(db, table)
+func (tx *DBTX) Set(table string, dbReq *DBUpdateReq) (bool, error) {
+	tdef := getTableDef(tx, table)
 	if tdef == nil {
 		return false, fmt.Errorf("table not found: %s", table)
 	}
-	return dbUpdate(db, tdef, dbReq)
+	return dbUpdate(tx, tdef, dbReq)
 }
 
-func (db *DB) Insert(table string, rec Record) (bool, error) {
-	return db.Set(table, &DBUpdateReq{
+func (tx *DBTX) Insert(table string, rec Record) (bool, error) {
+	return tx.Set(table, &DBUpdateReq{
 		Record: rec,
 		Mode:   MODE_INSERT_ONLY,
 	})
 }
 
-func (db *DB) Update(table string, rec Record) (bool, error) {
-	return db.Set(table, &DBUpdateReq{
+func (tx *DBTX) Update(table string, rec Record) (bool, error) {
+	return tx.Set(table, &DBUpdateReq{
 		Record: rec,
 		Mode:   MODE_UPDATE_ONLY,
 	})
 }
 
-func (db *DB) Upsert(table string, rec Record) (bool, error) {
-	return db.Set(table, &DBUpdateReq{
+func (tx *DBTX) Upsert(table string, rec Record) (bool, error) {
+	return tx.Set(table, &DBUpdateReq{
 		Record: rec,
 		Mode:   MODE_UPSERT,
 	})
 }
 
 // delete a row by primary key
-func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
+func dbDelete(tx *DBTX, tdef *TableDef, rec Record) (bool, error) {
 	// extract primary key
 	values, err := getValues(tdef, rec, tdef.Indexes[0])
 	if err != nil {
@@ -598,7 +617,7 @@ func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
 
 	// delete the row
 	req := DeleteReq{Key: key}
-	if deleted, err := db.kv.Del(&req); !deleted {
+	if deleted, err := tx.kv.Del(&req); !deleted {
 		return false, err
 	}
 
@@ -614,7 +633,7 @@ func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	old := Record{tdef.Cols, values}
 
 	// delete old index keys
-	if err = indexOp(db, tdef, INDEX_DEL, old); err != nil {
+	if err = indexOp(tx, tdef, INDEX_DEL, old); err != nil {
 		return false, err
 	}
 
@@ -622,12 +641,12 @@ func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
 }
 
 // delete a row by primary key
-func (db *DB) Delete(table string, rec Record) (bool, error) {
-	tdef := getTableDef(db, table)
+func (tx *DBTX) Delete(table string, rec Record) (bool, error) {
+	tdef := getTableDef(tx, table)
 	if tdef == nil {
 		return false, fmt.Errorf("table not found: %s", table)
 	}
-	return dbDelete(db, tdef, rec)
+	return dbDelete(tx, tdef, rec)
 }
 
 func (db *DB) Open() error {
@@ -651,7 +670,7 @@ type Scanner struct {
 
 	// === internal ===
 
-	db     *DB
+	tx     *DBTX
 	tdef   *TableDef
 	index  int    // which index?
 	iter   *BIter // underlying B+tree iterator
@@ -715,12 +734,12 @@ func (sc *Scanner) Deref(rec *Record) {
 		}
 
 		// fetch the row by primary key
-		ok, err := dbGet(sc.db, tdef, rec)
+		ok, err := dbGet(sc.tx, tdef, rec)
 		assert(ok && err == nil) // internal consistency
 	}
 }
 
-func dbScan(db *DB, tdef *TableDef, req *Scanner) error {
+func dbScan(tx *DBTX, tdef *TableDef, req *Scanner) error {
 	// verify range
 	switch {
 	case req.Cmp1 > 0 && req.Cmp2 < 0: // scan forward
@@ -741,7 +760,7 @@ func dbScan(db *DB, tdef *TableDef, req *Scanner) error {
 		return err
 	}
 
-	req.db = db
+	req.tx = tx
 	req.tdef = tdef
 
 	// select the index
@@ -761,7 +780,7 @@ func dbScan(db *DB, tdef *TableDef, req *Scanner) error {
 	req.keyEnd = encodeKeyPartial(nil, prefix, req.Key2.Vals, req.Cmp2)
 
 	// seek to start key
-	req.iter = db.kv.tree.Seek(keyStart, req.Cmp1)
+	req.iter = tx.kv.Seek(keyStart, req.Cmp1)
 	return nil
 }
 
@@ -779,10 +798,10 @@ func checkTypes(tdef *TableDef, rec Record) error {
 	return nil
 }
 
-func (db *DB) Scan(table string, req *Scanner) error {
-	tdef := getTableDef(db, table)
+func (tx *DBTX) Scan(table string, req *Scanner) error {
+	tdef := getTableDef(tx, table)
 	if tdef == nil {
 		return fmt.Errorf("table not found: %s", table)
 	}
-	return dbScan(db, tdef, req)
+	return dbScan(tx, tdef, req)
 }
