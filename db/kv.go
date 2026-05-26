@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -30,6 +31,18 @@ type KV struct {
 		updates map[uint64][]byte // pending updates, including appended pages
 	}
 	failed bool // did the last update failed?
+
+	// === concurrency control ===
+
+	mutex   sync.Mutex    // to serialize TX methods
+	version uint64        // monotonic version number; persisted in meta page
+	ongoing []uint64      // version numbers of concurrent TXs
+	history []CommittedTX // committed changes; for detecting conflicts
+}
+
+type CommittedTX struct {
+	version uint64
+	writes  []KeyRange // sorted
 }
 
 /*
@@ -68,12 +81,13 @@ func (db *KV) pageRead(ptr uint64) []byte {
 	if node, ok := db.page.updates[ptr]; ok {
 		return node // pending update
 	}
-	return db.pageReadFile(ptr)
+	return mmapRead(ptr, db.mmap.chunks)
 }
 
-func (db *KV) pageReadFile(ptr uint64) []byte {
+// read a page from file through mmap
+func mmapRead(ptr uint64, chunks [][]byte) []byte {
 	start := uint64(0)
-	for _, chunk := range db.mmap.chunks {
+	for _, chunk := range chunks {
 		end := start + uint64(len(chunk))/BTREE_PAGE_SIZE
 		if ptr < end {
 			offset := BTREE_PAGE_SIZE * (ptr - start)
@@ -87,6 +101,7 @@ func (db *KV) pageReadFile(ptr uint64) []byte {
 // 'BTree.new', allocate a free page
 func (db *KV) pageAlloc(node []byte) uint64 {
 	if ptr := db.free.PopHead(); ptr != 0 { // try free-list
+		assert(db.page.updates[ptr] == nil)
 		db.page.updates[ptr] = node
 		return ptr
 	}
@@ -114,7 +129,7 @@ func (db *KV) pageWrite(ptr uint64) []byte {
 
 	if !(db.page.flushed == 2 && ptr == 1) {
 		// initialized from file
-		copy(node, db.pageReadFile(ptr))
+		copy(node, mmapRead(ptr, db.mmap.chunks))
 	}
 	// else (db.page.flushed == 2 && ptr == 1):
 	// - Happen the 1st time the B+tree root is split.
@@ -128,7 +143,7 @@ func (db *KV) pageWrite(ptr uint64) []byte {
 	return node
 }
 
-// write (append) new pages after B+tree updates
+// write updated pages (free-list nodes + data)
 func writePages(db *KV) error {
 	// extend mmap if needed
 	size := (int(db.page.flushed + db.page.nappend)) * BTREE_PAGE_SIZE
@@ -136,7 +151,7 @@ func writePages(db *KV) error {
 		return err
 	}
 
-	// write data pages to the file
+	// write updated pages to the file
 	for ptr, node := range db.page.updates {
 		offset := int64(ptr * BTREE_PAGE_SIZE)
 		if _, err := unix.Pwrite(db.fd, node, offset); err != nil {
@@ -179,12 +194,13 @@ func extendMmap(db *KV, size int) error {
 
 /*
 Meta page (page 0):
-| sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | (unused) |
-| 16B |    8B    |     8B    | 8B		 | 8B		| 8B		| 8B	   | ...	  |
+| sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | ver | (unused) |
+| 16B |    8B    |     8B    | 8B		 | 8B		| 8B		| 8B	   | 8B	 | ...	  	|
 . sig (signature): magic bytes to identify file type
 . root_ptr: pointer to the latest root node
 . page_used: number of pages
 . head/tail page/seq: see FreeList struct
+. ver: version number
 */
 
 const DB_SIG = "RelationalDB0123" // 16-byte string to identify file type
@@ -197,11 +213,12 @@ func loadMeta(db *KV, data []byte) {
 	db.free.headSeq = binary.LittleEndian.Uint64(data[40:48])
 	db.free.tailPage = binary.LittleEndian.Uint64(data[48:56])
 	db.free.tailSeq = binary.LittleEndian.Uint64(data[56:64])
+	db.version = binary.LittleEndian.Uint64(data[64:72])
 }
 
 // save DB metadata
 func saveMeta(db *KV) []byte {
-	var data [64]byte
+	var data [72]byte
 	copy(data[:16], []byte(DB_SIG))
 	binary.LittleEndian.PutUint64(data[16:24], db.tree.root)
 	binary.LittleEndian.PutUint64(data[24:32], db.page.flushed)
@@ -209,6 +226,7 @@ func saveMeta(db *KV) []byte {
 	binary.LittleEndian.PutUint64(data[40:48], db.free.headSeq)
 	binary.LittleEndian.PutUint64(data[48:56], db.free.tailPage)
 	binary.LittleEndian.PutUint64(data[56:64], db.free.tailSeq)
+	binary.LittleEndian.PutUint64(data[64:72], db.version)
 	return data[:]
 }
 
@@ -232,7 +250,7 @@ func readRoot(db *KV, fileSize int64) error {
 	loadMeta(db, data)
 
 	// initialize free-list
-	db.free.SetMaxSeq()
+	db.free.SetMaxVer(db.version)
 
 	// verify
 	bad := !bytes.Equal([]byte(DB_SIG), data[:16])
@@ -278,9 +296,6 @@ func updateFile(db *KV) error {
 	if err := db.Fsync(db.fd); err != nil {
 		return err
 	}
-
-	// prepare the free-list for next update
-	db.free.SetMaxSeq()
 
 	return nil
 }

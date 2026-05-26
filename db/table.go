@@ -670,30 +670,20 @@ type Scanner struct {
 
 	// === internal ===
 
-	tx     *DBTX
-	tdef   *TableDef
-	index  int    // which index?
-	iter   *BIter // underlying B+tree iterator
-	keyEnd []byte // encoded Key2
+	tx    *DBTX
+	tdef  *TableDef
+	index int    // which index?
+	iter  KVIter // underlying KV iterator
 }
 
 // currently within range?
 func (sc *Scanner) Valid() bool {
-	if !sc.iter.Valid() {
-		return false
-	}
-	key, _ := sc.iter.Deref()
-	return cmpOK(key, sc.Cmp2, sc.keyEnd)
+	return sc.iter.Valid()
 }
 
-// move the underlying B+tree iterator (in correct direction)
+// move the underlying KV iterator
 func (sc *Scanner) Next() {
-	assert(sc.Valid())
-	if sc.Cmp1 > 0 { // >= or >
-		sc.iter.Next()
-	} else { // <= or <
-		sc.iter.Prev()
-	}
+	sc.iter.Next()
 }
 
 // return current row
@@ -777,10 +767,10 @@ func dbScan(tx *DBTX, tdef *TableDef, req *Scanner) error {
 	// encode start/end key
 	prefix := tdef.Prefixes[req.index]
 	keyStart := encodeKeyPartial(nil, prefix, req.Key1.Vals, req.Cmp1)
-	req.keyEnd = encodeKeyPartial(nil, prefix, req.Key2.Vals, req.Cmp2)
+	keyEnd := encodeKeyPartial(nil, prefix, req.Key2.Vals, req.Cmp2)
 
 	// seek to start key
-	req.iter = tx.kv.Seek(keyStart, req.Cmp1)
+	req.iter = tx.kv.Seek(keyStart, req.Cmp1, keyEnd, req.Cmp2)
 	return nil
 }
 

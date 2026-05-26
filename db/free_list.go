@@ -5,14 +5,14 @@ import (
 )
 
 // free-list's node format (consume a page itself)
-// | next | pointers | unused |
-// | 8B   | n * 8B	 | ...	  |
+// | next | (pointer + version)s | unused |
+// | 8B   | n * (8B + 8B)		 | ...	  |
 // . next: pointer to next node
 // . pointers: pointers to free pages
 type LNode []byte
 
 const FREE_LIST_HEADER = 8
-const FREE_LIST_CAP = (BTREE_PAGE_SIZE - FREE_LIST_HEADER) / 8
+const FREE_LIST_CAP = (BTREE_PAGE_SIZE - FREE_LIST_HEADER) / 16
 
 // === getters & setters ===
 
@@ -24,15 +24,17 @@ func (node LNode) setNext(next uint64) {
 	binary.LittleEndian.PutUint64(node[0:8], next)
 }
 
-func (node LNode) getPtr(idx int) uint64 {
-	offset := FREE_LIST_HEADER + idx*8
-	return binary.LittleEndian.Uint64(node[offset:])
+func (node LNode) getItem(idx int) (ptr uint64, version uint64) {
+	offset := FREE_LIST_HEADER + idx*16
+	return binary.LittleEndian.Uint64(node[offset:]),
+		binary.LittleEndian.Uint64(node[offset+8:])
 }
 
-func (node LNode) setPtr(idx int, ptr uint64) {
+func (node LNode) setItem(idx int, ptr uint64, version uint64) {
 	assert(idx < FREE_LIST_CAP)
-	offset := FREE_LIST_HEADER + idx*8
+	offset := FREE_LIST_HEADER + idx*16
 	binary.LittleEndian.PutUint64(node[offset:], ptr)
+	binary.LittleEndian.PutUint64(node[offset+8:], version)
 }
 
 type FreeList struct {
@@ -40,7 +42,7 @@ type FreeList struct {
 
 	get func(uint64) []byte // read a page
 	new func([]byte) uint64 // append a new page
-	set func(uint64) []byte // returns a writable buffer to capture in-place update
+	set func(uint64) []byte // returns a writable buffer to capture updates
 
 	// === persisted data in meta page ===
 
@@ -52,9 +54,11 @@ type FreeList struct {
 	// === in-memory states ===
 
 	maxSeq uint64 // saved 'tailSeq' to prevent consuming newly added items
+	maxVer uint64 // oldest reader version
+	curVer uint64 // version number when committing
 }
 
-// wrapped-around index from sequence number
+// wrapped-around index into head/tail node from sequence number
 //   - 2 sequence numbers are monotonically increasing
 //   - to prevent list head from overrunning list tail,
 //     just compare the sequence numbers
@@ -87,13 +91,16 @@ func (fl *FreeList) PopHead() uint64 {
 func flPop(fl *FreeList) (ptr uint64, head uint64) {
 	fl.check()
 	if fl.headSeq == fl.maxSeq {
-		return 0, 0 // cannot advance
+		return 0, 0 // cannot advance; empty list
 	}
 
 	node := LNode(fl.get(fl.headPage))
-	ptr = node.getPtr(seq2idx(fl.headSeq))
-	fl.headSeq++
+	ptr, version := node.getItem(seq2idx(fl.headSeq))
+	if versionBefore(fl.maxVer, version) {
+		return 0, 0 // cannot advance; still in use
+	}
 
+	fl.headSeq++
 	// remove head if it becomes empty
 	if seq2idx(fl.headSeq) == 0 { // wrapped-around
 		head, fl.headPage = fl.headPage, node.getNext()
@@ -107,7 +114,7 @@ func (fl *FreeList) PushTail(ptr uint64) {
 	fl.check()
 
 	// add to tail node
-	LNode(fl.set(fl.tailPage)).setPtr(seq2idx(fl.tailSeq), ptr)
+	LNode(fl.set(fl.tailPage)).setItem(seq2idx(fl.tailSeq), ptr, fl.curVer)
 	fl.tailSeq++
 
 	// if tail node is full, add a new empty tail node
@@ -128,17 +135,15 @@ func (fl *FreeList) PushTail(ptr uint64) {
 
 		// also add the head node if it's removed
 		if head != 0 {
-			LNode(fl.set(fl.tailPage)).setPtr(0, head)
+			LNode(fl.set(fl.tailPage)).setItem(0, head, fl.curVer)
 			fl.tailSeq++
 		}
 	}
 }
 
-// - at the beginning of an update, save the current tailSeq to maxSeq
-// - during the update, don't let headSeq overrun maxSeq
-// - after that, maxSeq is advanced to tailSeq
-//
+// set oldest reader version &
 // make the newly added items available for consumption
-func (fl *FreeList) SetMaxSeq() {
+func (fl *FreeList) SetMaxVer(maxVer uint64) {
 	fl.maxSeq = fl.tailSeq
+	fl.maxVer = maxVer
 }
