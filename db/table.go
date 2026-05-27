@@ -40,7 +40,7 @@ func (db *DB) Abort(tx *DBTX) {
 type TableDef struct {
 	// === user-defined ===
 
-	Name    string
+	Name    string     // table name
 	Types   []uint32   // column types
 	Cols    []string   // column names
 	Indexes [][]string // 1st index is primary key
@@ -386,7 +386,7 @@ const TABLE_PREFIX_MIN = 100
 // verify indexes & add PK to secondary indexes
 func tableDefChecK(tdef *TableDef) error {
 	// verify table schema
-	bad := tdef.Name == "" || len(tdef.Cols) == 0
+	bad := tdef.Name == "" || len(tdef.Cols) == 0 || len(tdef.Indexes) == 0
 	bad = bad || len(tdef.Cols) != len(tdef.Types)
 	if bad {
 		return fmt.Errorf("bad table schema: %s", tdef.Name)
