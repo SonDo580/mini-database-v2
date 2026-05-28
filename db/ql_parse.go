@@ -49,6 +49,67 @@ type QLNode struct {
 	Kids []QLNode // operands
 }
 
+// string representation of expression
+func (node *QLNode) Display() string {
+	switch node.Type {
+	case QL_SYM:
+		return string(node.Str)
+	case QL_TUP:
+		kidStrList := make([]string, len(node.Kids))
+		for i, kid := range node.Kids {
+			kidStrList[i] = kid.Display()
+		}
+		return "(" + strings.Join(kidStrList, ", ") + ")"
+	case QL_STR:
+		return "\"" + string(node.Str) + "\""
+	case QL_I64:
+		return strconv.FormatInt(node.I64, 10)
+	case QL_CMP_GE:
+		return node.displayBinOp(">=")
+	case QL_CMP_GT:
+		return node.displayBinOp(">")
+	case QL_CMP_LT:
+		return node.displayBinOp("<")
+	case QL_CMP_LE:
+		return node.displayBinOp("<=")
+	case QL_CMP_EQ:
+		return node.displayBinOp("=")
+	case QL_CMP_NE:
+		return node.displayBinOp("!=")
+	case QL_ADD:
+		return node.displayBinOp("+")
+	case QL_SUB:
+		return node.displayBinOp("-")
+	case QL_MUL:
+		return node.displayBinOp("*")
+	case QL_DIV:
+		return node.displayBinOp("/")
+	case QL_MOD:
+		return node.displayBinOp("%")
+	case QL_AND:
+		return node.displayBinOp("AND")
+	case QL_OR:
+		return node.displayBinOp("OR")
+	case QL_NOT:
+		return "NOT " + node.Kids[0].Display()
+	case QL_NEG:
+		return "-" + node.Kids[0].Display()
+	default:
+		panic("unreachable")
+	}
+}
+
+func (node *QLNode) displayBinOp(opStr string) string {
+	switch node.Type {
+	case QL_CMP_EQ, QL_CMP_NE, QL_CMP_GE, QL_CMP_LE, QL_CMP_GT, QL_CMP_LT, // comparison
+		QL_ADD, QL_SUB, QL_MUL, QL_DIV, QL_MOD, // arithmetic
+		QL_AND, QL_OR: // logic
+		return node.Kids[0].Display() + " " + opStr + " " + node.Kids[1].Display()
+	default:
+		panic("not binop")
+	}
+}
+
 // stmt: create table
 type QLCreateTable struct {
 	Def TableDef

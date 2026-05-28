@@ -11,6 +11,7 @@ https://build-your-own.org/database/
 - **Improvements:**
   - binary search for key in B+tree node.
   - short-circuit evaluation (`AND`, `OR`).
+  - string representations for expressions.
 
 - **Modifications to query language:**
   - disallow trailing comma.
@@ -19,7 +20,7 @@ https://build-your-own.org/database/
 
 ## Query language specification
 
-Similar but not exactly `SQL`
+Similar but not exactly `SQL`. The following is not official grammar, just descriptions and examples of some key parts.
 
 - **Statements**:
 
@@ -33,32 +34,48 @@ index (c, b, a),
 primary key (a, b)
 );
 
-select expr... from table_name conditions limit offset, count;
+select expr... from table_name <conditions> <limit>;
 
 insert into table_name (cols...) values (a, b, c)...;
 replace into table_name (cols...) values (a, b, c)...;
 upsert into table_name (cols...) values (a, b, c)...;
 
-delete from table_name conditions limit offset, count;
+delete from table_name <conditions> <limit>;
 
-update table_name set a = expr, b = expr, ... conditions limit offset, count;
+update table_name set a = expr, b = expr, ... <conditions> <limit>;
 ```
 
 - **Conditions**:
   - don't use `WHERE`, use separate clauses for indexing and filtering (`INDEX BY` and `FILTER`).
-  - both are optional; primary key is used if `INDEX BY` is missing.
+  - **both are optional**; primary key is used if `INDEX BY` is missing.
   - we make the index selection explicit to save the DB from guessing.
 
 ```sql
--- INDEX BY example
+-- INDEX BY: 2 forms
+index by cols <cmp> vals
+index by cols1 <cmp1> vals1 AND cols1 <cmp2> vals1
+-- cmp: comparison operators, except '!=' ('=' can only be use in the 1st form)
+-- cols, vals: must be 2 non-tuple items, or 2 tuples with the same number of items
+-- cols: must contain only symbols (column names)
+
+-- INDEX BY examples
 select expr... from table_name index by a = 1;
 select expr... from table_name index by a > 1;
 select expr... from table_name index by a > 1 and a < 5;
 select expr... from table_name index by a < 5 and a > 1; -- descending order
 
--- FILTER (arbitrary)
+
+-- FILTER is any expression that evaluates to boolean or int
 select expr... from table_name index by condition1 filter condition2;
-select expr... from table_name filter condition2;
+select expr... from table_name filter condition;
+```
+
+- **Limit (optional)**:
+
+```sql
+-- 2 forms
+select expr... from table_name limit count;
+select expr... from table_name limit offset, count;
 ```
 
 - **Expressions**:

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 )
 
 // context for evaluating expression
@@ -549,13 +548,7 @@ func (tx *DBTX) execSelect(req *QLSelect) (RecordIter, error) {
 		if names[i] != "" {
 			continue
 		}
-
-		// TODO: string representation for each expr type
-		if exprs[i].Type == QL_SYM { // column
-			names[i] = string(exprs[i].Str)
-		} else {
-			names[i] = strconv.Itoa(i)
-		}
+		names[i] = exprs[i].Display()
 	}
 
 	return &qlSelectIter{
