@@ -6,11 +6,16 @@ A relational database engine over B+tree
 
 https://build-your-own.org/database/
 
-## My modifications (for query language)
+## My extensions
 
-- disallow trailing comma.
-- `count` is size limit, not end offset.
-- `offset` and `count` are applied to rows matching `filter`, not all rows matching `index by`
+- **Improvements:**
+  - binary search for key in B+tree node.
+  - short-circuit evaluation (`AND`, `OR`).
+
+- **Modifications to query language:**
+  - disallow trailing comma.
+  - `count` is size limit, not end offset.
+  - `offset` and `count` are applied to rows matching `filter`, not all rows matching `index by`.
 
 ## Query language specification
 

@@ -102,6 +102,13 @@ func cmp2bool(result int, cmp uint32) bool {
 
 // evaluate binary operation
 func (ctx *QLEvalCtx) evalBinOp(node QLNode) {
+	// logic with short-circuit
+	switch node.Type {
+	case QL_AND, QL_OR:
+		ctx.evalLogic(node)
+		return
+	}
+
 	isCmp := false
 	switch node.Type {
 	case QL_CMP_EQ, QL_CMP_NE, QL_CMP_GE, QL_CMP_LE, QL_CMP_GT, QL_CMP_LT:
@@ -117,7 +124,6 @@ func (ctx *QLEvalCtx) evalBinOp(node QLNode) {
 	}
 
 	// evaluate sub-expressions
-	// TODO: short-circuit (AND, OR)
 	ctx.evalExpr(node.Kids[0])
 	val1 := ctx.out
 	ctx.evalExpr(node.Kids[1])
@@ -136,15 +142,49 @@ func (ctx *QLEvalCtx) evalBinOp(node QLNode) {
 		return
 	case val1.Type != val2.Type:
 		ctx.eErr("binop type mismatch")
-	case val1.Type == TYPE_INT64:
+	case val1.Type == TYPE_INT64: // i64 arithmetic
 		ctx.out.Type = TYPE_INT64
 		ctx.out.I64 = ctx.binOpI64(node.Type, val1.I64, val2.I64)
-	case val1.Type == TYPE_BYTES:
+	case val1.Type == TYPE_BYTES: // str
 		ctx.out.Type = TYPE_BYTES
 		ctx.out.Str = ctx.binOpStr(node.Type, val1.Str, val2.Str)
 	default:
 		panic("unreachable")
 	}
+}
+
+// logic operation with short-circuit
+func (ctx *QLEvalCtx) evalLogic(node QLNode) {
+	// 1st operand
+	ctx.evalExpr(node.Kids[0])
+	if ctx.out.Type != TYPE_INT64 {
+		ctx.eErr("invalid AND operand type")
+	}
+	if ctx.err != nil {
+		return
+	}
+
+	// short-circuit:
+	// - AND: stop if 1st operand is falsy
+	// - OR: stop if 1st operand is truthy
+	if node.Type == QL_AND && ctx.out.I64 == 0 {
+		return
+	}
+	if node.Type == QL_OR && ctx.out.I64 != 0 {
+		ctx.out.I64 = 1
+		return
+	}
+
+	// 2nd operand
+	ctx.evalExpr(node.Kids[1])
+	if ctx.out.Type != TYPE_INT64 {
+		ctx.eErr("invalid AND operand type")
+	}
+	if ctx.err != nil {
+		return
+	}
+
+	ctx.out.I64 = b2i(ctx.out.I64 != 0)
 }
 
 func (ctx *QLEvalCtx) valueCmp(val1, val2 Value) int {
@@ -181,9 +221,9 @@ func (ctx *QLEvalCtx) tupleCmp(n1, n2 QLNode) int {
 	return 0
 }
 
+// i64 arithmetic
 func (ctx *QLEvalCtx) binOpI64(op uint32, i1, i2 int64) int64 {
 	switch op {
-	// arithmetic
 	case QL_ADD:
 		return i1 + i2
 	case QL_SUB:
@@ -202,15 +242,8 @@ func (ctx *QLEvalCtx) binOpI64(op uint32, i1, i2 int64) int64 {
 			return 0
 		}
 		return i1 % i2
-
-	// logic
-	case QL_AND:
-		return b2i(i1&i2 != 0)
-	case QL_OR:
-		return b2i(i1|i2 != 0)
-
 	default:
-		ctx.eErr("bad i64 binop")
+		ctx.eErr("bad i64 arithmetic binop")
 		return 0
 	}
 }
