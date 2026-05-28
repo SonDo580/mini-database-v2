@@ -202,22 +202,27 @@ func leafUpdate(
 	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-(idx+1)) // copy keys from 'idx + 1'
 }
 
-// find insert/update position (keep keys in increasing order)
-//   - find last position <= key
-//   - TODO (improvement): use binary search
+// binary search for last position <= key
+// (keys in each node are unique and kept in increasing order)
 func nodeLookupLE(node BNode, key []byte) uint16 {
-	nkeys := node.nkeys()
-	var i uint16
-	for i = 0; i < nkeys; i++ {
-		cmp := bytes.Compare(node.getKey(i), key)
-		if cmp == 0 {
-			return i // found (unique) key == search_key
+	left := 0
+	right := int(node.nkeys()) - 1
+
+	for left <= right {
+		mid := (left + right) / 2
+		cmp := bytes.Compare(node.getKey(uint16(mid)), key)
+
+		if cmp == 0 { // found (unique) key == search_key
+			return uint16(mid)
 		}
-		if cmp > 0 {
-			break // found key > search_key
+		if cmp > 0 { // key > search_key
+			right = mid - 1
+		} else { // key < search_key
+			left = mid + 1
 		}
 	}
-	return i - 1 // can be -1 (overflow to UIN16_MAX)
+
+	return uint16(right) // can be -1 (wrap around to UIN16_MAX)
 }
 
 // split an oversized node into 2 nodes
