@@ -6,6 +6,12 @@ A relational database engine over B+tree
 
 https://build-your-own.org/database/
 
+## My modifications (for query language)
+
+- disallow trailing comma.
+- `count` is size limit, not end offset.
+- `offset` and `count` are applied to rows matching `filter`, not all rows matching `index by`
+
 ## Query language specification
 
 Similar but not exactly `SQL`
@@ -13,10 +19,6 @@ Similar but not exactly `SQL`
 - **Statements**:
 
 ```sql
--- my modifications:
--- . disallow trailing comma
--- . 'count' is size limit, not end offset
-
 create table table_name (
 a type1,
 b type2,

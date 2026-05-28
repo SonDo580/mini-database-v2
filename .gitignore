@@ -3,3 +3,5 @@
 
 # incomplete, handle later
 db/*_test.go
+
+todo.md

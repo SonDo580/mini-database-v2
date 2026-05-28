@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -59,8 +60,8 @@ type QLScan struct {
 	Key1   QLNode // index by
 	Key2   QLNode // |
 	Filter QLNode // filter
-	Offset int64  // limit
-	Limit  int64  // |
+	Offset int64
+	Limit  int64
 }
 
 // stmt: select
@@ -161,7 +162,7 @@ func (p *Parser) match(tokens ...string) bool {
 	return true
 }
 
-// report parsing error
+// report parsing error; skip if already has error
 func (p *Parser) pErr(format string, args ...interface{}) {
 	if p.err == nil {
 		p.err = fmt.Errorf(format, args...)
@@ -196,30 +197,32 @@ func (p *Parser) pGroupedCommaList(pItem func()) {
 	}
 }
 
-func (p *Parser) pStmt() (r interface{}) {
+func (p *Parser) pStmt() (stmt interface{}, err error) {
 	switch {
 	case p.match("create", "table"):
-		r = p.pCreateTable()
+		stmt = p.pCreateTable()
 	case p.match("select"):
-		r = p.pSelect()
+		stmt = p.pSelect()
 	case p.match("insert", "into"):
-		r = p.pInsert(MODE_INSERT_ONLY)
+		stmt = p.pInsert(MODE_INSERT_ONLY)
 	case p.match("replace", "into"):
-		r = p.pInsert(MODE_UPDATE_ONLY)
+		stmt = p.pInsert(MODE_UPDATE_ONLY)
 	case p.match("upsert", "into"):
-		r = p.pInsert(MODE_UPSERT)
+		stmt = p.pInsert(MODE_UPSERT)
 	case p.match("delete", "from"):
-		r = p.pDelete()
+		stmt = p.pDelete()
 	case p.match("update"):
-		r = p.pUpdate()
+		stmt = p.pUpdate()
 	default:
 		p.pErr("unknown stmt")
 	}
+
+	p.consume(";", "expect ';' after statement")
+
 	if p.err != nil {
-		return nil
+		return nil, p.err
 	}
-	// TODO: semicolon?
-	return r
+	return stmt, nil
 }
 
 func (p *Parser) pCreateTable() *QLCreateTable {
@@ -327,11 +330,10 @@ func (p *Parser) pScan(node *QLScan) {
 
 // 2 forms:
 // - INDEX BY cols <cmp> vals
-// - INDEX BY cols <cmp1> vals AND cols <cmp2> vals
+// - INDEX BY cols1 <cmp1> vals1 AND cols1 <cmp2> vals1
 //
 // ===
-//   - cmp: comparison operators, except '!='
-//   - cmp1, cmp2: comparison operators, except '=' and '!=' ('=' can only be use in the 1st form)
+//   - cmp: comparison operators, except '!=' ('=' can only be use in the 1st form)
 //   - cols, vals: must be 2 non-tuple items, or 2 tuples with the same number of items
 //   - cols: must contain only symbols (column names)
 func (p *Parser) pIndexBy(node *QLScan) {
@@ -735,4 +737,44 @@ func (p *Parser) tryStr(node *QLNode) bool {
 	node.Str = s
 	p.idx = curr
 	return true
+}
+
+// parse a single QL statement
+func (p *Parser) Parse() (r interface{}, err error) {
+	return p.pStmt()
+}
+
+type StmtScanner struct {
+	input []byte
+	idx   int
+}
+
+func (s *StmtScanner) skipSpaces() {
+	for s.idx < len(s.input) && isSpace(s.input[s.idx]) {
+		s.idx++
+	}
+}
+
+// get next QL statement string from input (not verified)
+func (s *StmtScanner) NextStmtStr() (stmtStr []byte, err error) {
+	s.skipSpaces()
+	if s.idx == len(s.input) {
+		return nil, nil
+	}
+
+	end := s.idx
+	for end < len(s.input) && s.input[end] != ';' {
+		end++
+	}
+
+	if end == s.idx { // s.input[s.idx] == ';'
+		return nil, errors.New("scan: empty stmt")
+	}
+	if end == len(s.input) {
+		return nil, errors.New("scan: stmt not terminated")
+	}
+
+	stmtStr = s.input[s.idx : end+1] // include ';'
+	s.idx = end + 1
+	return stmtStr, nil
 }

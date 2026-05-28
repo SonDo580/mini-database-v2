@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sync"
 )
 
 type DB struct {
@@ -15,6 +16,7 @@ type DB struct {
 
 	kv     KV
 	tables map[string]*TableDef // cached table schemas
+	mu     sync.Mutex           // for table schemas cache
 }
 
 // DB transaction
@@ -23,17 +25,30 @@ type DBTX struct {
 	db *DB
 }
 
+// begin a transaction
 func (db *DB) Begin(tx *DBTX) {
 	tx.db = db
 	db.kv.Begin(&tx.kv)
 }
 
+// end a transaction: commit updates, rollback on error
 func (db *DB) Commit(tx *DBTX) error {
 	return db.kv.Commit(&tx.kv)
 }
 
+// end a transaction: rollback
 func (db *DB) Abort(tx *DBTX) {
 	db.kv.Abort(&tx.kv)
+}
+
+// save state before executing statement
+func (tx *DBTX) Save(saved *TXSaved) {
+	tx.kv.Save(saved)
+}
+
+// revert any updates by the statement
+func (tx *DBTX) Revert(saved *TXSaved) {
+	tx.kv.Revert(saved)
 }
 
 // table schema
@@ -318,6 +333,9 @@ func getTableDef(tx *DBTX, name string) *TableDef {
 		return tdef
 	}
 
+	tx.db.mu.Lock()
+	defer tx.db.mu.Unlock()
+
 	// check schemas cache
 	if tdef := tx.db.tables[name]; tdef != nil {
 		return tdef
@@ -498,8 +516,9 @@ type DBUpdateReq struct {
 	Mode   int
 
 	// === out ===
-	Updated bool
-	Added   bool
+
+	Updated bool // inserted/updated
+	Added   bool // inserted
 }
 
 // insert/update a row
@@ -729,6 +748,7 @@ func (sc *Scanner) Deref(rec *Record) {
 	}
 }
 
+// range query
 func dbScan(tx *DBTX, tdef *TableDef, req *Scanner) error {
 	// verify range
 	switch {
@@ -740,26 +760,24 @@ func dbScan(tx *DBTX, tdef *TableDef, req *Scanner) error {
 	// !(key1 Cmp2 key2) -> scan 0 rows
 
 	// verify boundary keys
-	if !slices.Equal(req.Key1.Cols, req.Key2.Cols) {
-		return fmt.Errorf("bad range key")
-	}
 	if err := checkTypes(tdef, req.Key1); err != nil {
 		return err
 	}
-	if err := checkTypes(tdef, req.Key1); err != nil {
+	if err := checkTypes(tdef, req.Key2); err != nil {
 		return err
 	}
 
 	req.tx = tx
 	req.tdef = tdef
 
-	// select the index
-	isCovered := func(index []string) bool {
-		key := req.Key1.Cols
-		return len(index) >= len(key) &&
-			slices.Equal(index[:len(key)], key)
+	// key1's columns and key2's columns can be different
+	// -> select the 1st index that covers both
+	covered := func(key []string, index []string) bool {
+		return len(index) >= len(key) && slices.Equal(index[:len(key)], key)
 	}
-	req.index = slices.IndexFunc(tdef.Indexes, isCovered)
+	req.index = slices.IndexFunc(tdef.Indexes, func(index []string) bool {
+		return covered(req.Key1.Cols, index) && covered(req.Key2.Cols, index)
+	})
 	if req.index < 0 {
 		return fmt.Errorf("no index")
 	}
@@ -788,6 +806,7 @@ func checkTypes(tdef *TableDef, rec Record) error {
 	return nil
 }
 
+// range query
 func (tx *DBTX) Scan(table string, req *Scanner) error {
 	tdef := getTableDef(tx, table)
 	if tdef == nil {

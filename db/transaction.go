@@ -24,6 +24,24 @@ type KVTX struct {
 	done            bool // transaction already committed or rolled-back
 }
 
+// for reverting updates by a single statement inside a transaction
+type TXSaved struct {
+	root  uint64
+	reads []KeyRange
+}
+
+// save state before executing statement
+func (tx *KVTX) Save(saved *TXSaved) {
+	saved.root = tx.pending.root
+	saved.reads = tx.reads
+}
+
+// revert any updates by the statement
+func (tx *KVTX) Revert(saved *TXSaved) {
+	tx.pending.root = saved.root
+	tx.reads = saved.reads
+}
+
 // return True if version a < version b
 func versionBefore(a, b uint64) bool {
 	return a < b
