@@ -542,7 +542,7 @@ func dbUpdate(
 	cols := slices.Concat(tdef.Indexes[0], nonPrimaryKeyCols(tdef))
 	values, err := getValues(tdef, dbReq.Record, cols)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 
 	// insert/update the row

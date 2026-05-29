@@ -426,6 +426,11 @@ func evalMulti(env Record, exprs []QLNode) (vals []Value, err error) {
 // - moved out of Scanner's range.
 // - OR number of matched items reached 'limit'
 func (iter *qlScanIter) Next() {
+	if iter.count == iter.req.Limit { // reached 'limit'
+		iter.end = true
+		return
+	}
+
 	for iter.sc.Valid() {
 		// get current row and evaluate 'filter'
 		matched, err := iter.pull()
@@ -445,10 +450,8 @@ func (iter *qlScanIter) Next() {
 				continue
 			}
 
-			// stop if number of matched rows reached 'limit'
-			if iter.count == iter.req.Limit {
-				break
-			}
+			// if 'count' reached 'limit', don't set 'iter.end' to True yet,
+			// so Valid() still returns true; the next Next() will set that.
 
 			return // current row is valid
 		}
@@ -485,7 +488,7 @@ func (iter *qlScanIter) Valid() bool {
 // get cached item or pulling error
 func (iter *qlScanIter) Deref(rec *Record) error {
 	assert(iter.Valid())
-	if iter.err != nil {
+	if iter.err == nil {
 		*rec = iter.rec
 	}
 	return iter.err
@@ -722,7 +725,7 @@ func (executor *Executor) ExecStr(stmtStr []byte,
 		return QLResult{}, false, nil
 	}
 
-	// === handle DDL and DML statements ===
+	// === handle other statements ===
 
 	// currently in an explicit transaction block
 	if executor.inTx() {

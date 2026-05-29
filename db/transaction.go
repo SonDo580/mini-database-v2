@@ -408,11 +408,15 @@ func (tx *KVTX) Seek(
 
 func (tx *KVTX) Update(req *UpdateReq) (bool, error) {
 	tx.updateAttempted = true
+	currVal, exists := tx.Get(req.Key) // also add dependency range
+
+	// fail if insert duplicate key
+	if req.Mode == MODE_INSERT_ONLY && exists {
+		return false, errors.New("insert duplicate key")
+	}
 
 	// check if need update
-	currVal, exists := tx.Get(req.Key) // also add dependency range
 	if (req.Mode == MODE_UPDATE_ONLY && !exists) ||
-		(req.Mode == MODE_INSERT_ONLY && exists) ||
 		(exists && bytes.Equal(currVal, req.Val)) {
 		return false, nil
 	}
