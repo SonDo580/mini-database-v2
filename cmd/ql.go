@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SonDo580/mini-database-v2/db"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -31,21 +31,28 @@ func repl(database *db.DB) {
 	fmt.Println("QL version 0.0.1")
 	fmt.Println("Enter \".quit\" to exit this program")
 
-	reader := bufio.NewReader(os.Stdin)
+	// enable raw mode; restore terminal state when REPL exits
+	termState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		panic(err)
+	}
+	defer term.Restore(int(os.Stdin.Fd()), termState)
+	terminal := term.NewTerminal(os.Stdin, "ql> ")
+
 	stmtScanner := db.NewStmtScanner()
 	executor := db.NewExecutor(database)
 
 	stmtIncomplete := false
 	inTransaction := false
-
 	stmtStrsBuf := [][]byte{} // buffer statements until input ends with a complete statement
 
 	for {
 		// dynamic prompt
-		fmt.Printf(getPrompt(stmtIncomplete, inTransaction))
+		prompt := getPrompt(stmtIncomplete, inTransaction)
+		terminal.SetPrompt(prompt)
 
 		// read next input line
-		line, err := reader.ReadString('\n')
+		line, err := terminal.ReadLine()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -90,13 +97,13 @@ func repl(database *db.DB) {
 			res, inTX, err := executor.ExecStr(stmtStr)
 			inTransaction = inTX
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Execution error: %v\n", err)
+				fmt.Fprintf(terminal, "Execution error: %v\r\n", err)
 				break // skip remaining statements, read next input
 			}
 
-			err = printResult(res) // show result
+			err = printResult(terminal, res) // show result
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Show result error: %v\n", err)
+				fmt.Fprintf(terminal, "Show result error: %v\r\n", err)
 				break // skip remaining statements, read next input
 			}
 		}
@@ -122,51 +129,51 @@ func getPrompt(stmtIncomplete, inTransaction bool) string {
 	}
 }
 
-func printResult(res db.QLResult) error {
+func printResult(w io.Writer, res db.QLResult) error {
 	if res.Records != nil {
-		return printRecords(res.Records)
+		return printRecords(w, res.Records)
 	} else {
-		printStats(res)
+		printStats(w, res)
 		return nil
 	}
 }
 
-func printStats(res db.QLResult) {
+func printStats(w io.Writer, res db.QLResult) {
 	assert(res.Deleted*res.Updated == 0)
 	assert(res.Updated >= res.Added)
 	modified := res.Updated - res.Added
 
 	if res.Deleted > 0 {
-		fmt.Printf("Deleted %d rows\n", res.Deleted)
+		fmt.Fprintf(w, "Deleted %d rows\r\n", res.Deleted)
 	}
 	if res.Added > 0 {
-		fmt.Printf("Inserted %d rows\n", res.Added)
+		fmt.Fprintf(w, "Inserted %d rows\r\n", res.Added)
 	}
 	if modified > 0 {
-		fmt.Printf("Modified %d rows\n", modified)
+		fmt.Fprintf(w, "Modified %d rows\r\n", modified)
 	}
 }
 
 // print records with "line" mode:
 //   - line format: `<col>: <val>`.
 //   - records are separated by blank line.
-func printRecords(iter db.RecordIter) error {
+func printRecords(w io.Writer, iter db.RecordIter) error {
 	for ; iter.Valid(); iter.Next() {
 		rec := &db.Record{}
 		err := iter.Deref(rec)
 		if err != nil {
 			return err
 		}
-		printRecord(rec)
-		fmt.Println()
+		printRecord(w, rec)
+		fmt.Fprintf(w, "\r\n")
 	}
 	return nil
 }
 
-func printRecord(rec *db.Record) {
+func printRecord(w io.Writer, rec *db.Record) {
 	assert(len(rec.Cols) == len(rec.Vals))
 	for i := range len(rec.Cols) {
-		fmt.Printf("%s: %s\n", rec.Cols[i], rec.Vals[i].Display())
+		fmt.Fprintf(w, "%s: %s\r\n", rec.Cols[i], rec.Vals[i].Display())
 	}
 }
 
