@@ -6,12 +6,43 @@ A relational database engine over B+tree
 
 https://build-your-own.org/database/
 
-## My extensions
+## Execution pipeline
+
+[QL] -> [QL Parser] -> [QL Executor] -> [Table & Index] -> [KV Store] -> [B+Tree]
+
+## Some techniques
+
+**1. Copy-on-write for B+tree operations**
+
+- Insertion/deletion starts at leaf node.
+- After making a copy with modification, parent node is updated to point to new node, which is also done on its copy.
+- The copying propagates to root node, resulting in a new tree root.
+- The original tree remains intact and accessible from the old root.
+
+**2. Optimistic concurrency control**
+
+- Don't lock rows/tables **(pessimistic concurrency control)**.
+  Just abort the transaction when a conflict is detected.
+- **Phases**:
+  - Transaction starts.
+  - Reads are performed on snapshot. Writes are buffered.
+  - Before committing, check for conflicts with committed transactions.
+  - Transaction ends:
+    - If there're conflicts, abort and rollback.
+    - Otherwise, transfer buffered writes to DB.
+- **Detect conflicts**:
+  - current transaction attempted updates & read key ranges overlap with write key ranges of a committed newer-version transaction _(even if no changes happened, that "no-changes" result depends on the stale state of the dependency)_.
+
+## Self-implemented
 
 - **Improvements:**
   - binary search for key in B+tree node.
   - short-circuit evaluation (`AND`, `OR`).
   - string representations for expressions.
+
+- **Extensions**:
+  - add **transaction control statements** to query language _(underlying engine already supports the logic)_: `BEGIN`, `COMMIT`, `ROLLBACK`
+  - **auto-commit** mode: if a statement is not inside an explicit transaction block, automatically create a transaction to execute it.
 
 - **Modifications to query language:**
   - disallow trailing comma.
@@ -43,6 +74,11 @@ upsert into table_name (cols...) values (a, b, c)...;
 delete from table_name <conditions> <limit>;
 
 update table_name set a = expr, b = expr, ... <conditions> <limit>;
+
+-- transaction control (my extension)
+begin
+commit
+rollback
 ```
 
 - **Conditions**:

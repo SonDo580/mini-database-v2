@@ -152,10 +152,19 @@ type QLInsert struct {
 	Values [][]QLNode
 }
 
+// transaction control statements
+type QLBegin struct{}
+type QLCommit struct{}
+type QLRollback struct{}
+
 type Parser struct {
 	input []byte
 	idx   int
 	err   error
+}
+
+func NewParser(input []byte) *Parser {
+	return &Parser{input: input}
 }
 
 func isSpace(ch byte) bool {
@@ -188,6 +197,11 @@ var keywordSet = map[string]bool{
 	"by":      true,
 	"filter":  true,
 	"limit":   true,
+
+	// transaction control
+	"begin":    true,
+	"commit":   true,
+	"rollback": true,
 }
 
 // match multiple tokens sequentially (use lowercase for named keyword):
@@ -260,6 +274,12 @@ func (p *Parser) pGroupedCommaList(pItem func()) {
 
 func (p *Parser) pStmt() (stmt interface{}, err error) {
 	switch {
+	case p.match("begin"):
+		stmt = &QLBegin{}
+	case p.match("commit"):
+		stmt = &QLCommit{}
+	case p.match("rollback"):
+		stmt = &QLRollback{}
 	case p.match("create", "table"):
 		stmt = p.pCreateTable()
 	case p.match("select"):

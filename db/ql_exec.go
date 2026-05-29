@@ -674,12 +674,69 @@ func (tx *DBTX) execDelete(req *QLDelete) (uint64, error) {
 	return deletedCount, nil
 }
 
+type Executor struct {
+	db       *DB
+	activeTx *DBTX // current active transaction
+}
+
+func NewExecutor(db *DB) *Executor {
+	return &Executor{db: db}
+}
+
 // parse and execute a single QL statement
-func (tx *DBTX) ExecStr(stmtStr []byte) (QLResult, error) {
-	p := Parser{input: stmtStr}
-	stmt, err := p.Parse()
+func (executor *Executor) ExecStr(stmtStr []byte) (QLResult, error) {
+	parser := NewParser(stmtStr)
+	stmt, err := parser.Parse()
 	if err != nil {
 		return QLResult{}, err
 	}
-	return tx.execStmt(stmt)
+
+	// handle transaction control statements
+	switch stmt.(type) {
+	case *QLBegin:
+		if executor.activeTx != nil {
+			return QLResult{}, errors.New("already in a transaction")
+		}
+		executor.activeTx = &DBTX{}
+		executor.db.Begin(executor.activeTx)
+		return QLResult{}, nil
+	case *QLCommit:
+		if executor.activeTx == nil {
+			return QLResult{}, errors.New("no active transaction to commit")
+		}
+		err = executor.db.Commit(executor.activeTx)
+		executor.activeTx = nil
+		return QLResult{}, nil
+	case *QLRollback:
+		if executor.activeTx == nil {
+			return QLResult{}, errors.New("no active transaction to rollback")
+		}
+		executor.db.Abort(executor.activeTx)
+		executor.activeTx = nil
+		return QLResult{}, nil
+	}
+
+	// === handle DDL and DML statements ===
+
+	// currently in an explicit transaction block
+	if executor.activeTx != nil {
+		return executor.activeTx.execStmt(stmt)
+	}
+
+	// auto-commit mode (implicit single-statement transaction)
+	tx := &DBTX{}
+	executor.db.Begin(tx)
+
+	res, err := tx.execStmt(stmt)
+	if err != nil {
+		executor.db.Abort(tx)
+		return QLResult{}, err
+	}
+
+	err = executor.db.Commit(tx)
+	if err != nil {
+		return QLResult{}, err
+	}
+
+	return res, nil
 }
