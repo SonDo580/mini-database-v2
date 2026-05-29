@@ -6,9 +6,40 @@ A relational database engine over B+tree
 
 https://build-your-own.org/database/
 
+## Using CLI tool
+
+```bash
+# Option 1: Run directly
+go run cmd/ql.go <db_path>
+
+# Option 2: Compile (once) & run
+go build -o ql cmd/ql.go
+./ql <db_path>
+```
+
+- The DB file will be created automatically if not exists.
+- See [Query language specification](#query-language-specification) for usage examples.
+
 ## Execution pipeline
 
 [QL] -> [QL Parser] -> [QL Executor] -> [Table & Index] -> [KV Store] -> [B+Tree]
+
+## Self-implemented
+
+- **Improvements:**
+  - binary search for key in B+tree node.
+  - short-circuit evaluation (`AND`, `OR`).
+  - string representations for expressions.
+
+- **Extensions**:
+  - add **transaction control statements** to query language _(underlying engine already supports the logic)_: `BEGIN`, `COMMIT`, `ROLLBACK`
+  - **auto-commit** mode: if a statement is not inside an explicit transaction block, automatically create a transaction to execute it.
+  - CLI tool `ql` to interact with the database through query language.
+
+- **Modifications to query language:**
+  - disallow trailing comma.
+  - `count` is size limit, not end offset.
+  - `offset` and `count` are applied to rows matching `filter`, not all rows matching `index by`.
 
 ## Some techniques
 
@@ -32,22 +63,6 @@ https://build-your-own.org/database/
     - Otherwise, transfer buffered writes to DB.
 - **Detect conflicts**:
   - current transaction attempted updates & read key ranges overlap with write key ranges of a committed newer-version transaction _(even if no changes happened, that "no-changes" result depends on the stale state of the dependency)_.
-
-## Self-implemented
-
-- **Improvements:**
-  - binary search for key in B+tree node.
-  - short-circuit evaluation (`AND`, `OR`).
-  - string representations for expressions.
-
-- **Extensions**:
-  - add **transaction control statements** to query language _(underlying engine already supports the logic)_: `BEGIN`, `COMMIT`, `ROLLBACK`
-  - **auto-commit** mode: if a statement is not inside an explicit transaction block, automatically create a transaction to execute it.
-
-- **Modifications to query language:**
-  - disallow trailing comma.
-  - `count` is size limit, not end offset.
-  - `offset` and `count` are applied to rows matching `filter`, not all rows matching `index by`.
 
 ## Query language specification
 

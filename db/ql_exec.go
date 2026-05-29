@@ -683,60 +683,64 @@ func NewExecutor(db *DB) *Executor {
 	return &Executor{db: db}
 }
 
+func (executor *Executor) inTx() bool {
+	return executor.activeTx != nil
+}
+
 // parse and execute a single QL statement
-func (executor *Executor) ExecStr(stmtStr []byte) (QLResult, error) {
+func (executor *Executor) ExecStr(stmtStr []byte,
+) (res QLResult, inTX bool, err error) {
 	parser := NewParser(stmtStr)
 	stmt, err := parser.Parse()
 	if err != nil {
-		return QLResult{}, err
+		return QLResult{}, executor.inTx(), err
 	}
 
 	// handle transaction control statements
 	switch stmt.(type) {
 	case *QLBegin:
-		if executor.activeTx != nil {
-			return QLResult{}, errors.New("already in a transaction")
+		if executor.inTx() {
+			return QLResult{}, true, errors.New("already in a transaction")
 		}
 		executor.activeTx = &DBTX{}
 		executor.db.Begin(executor.activeTx)
-		return QLResult{}, nil
+		assert(executor.inTx())
+		return QLResult{}, true, nil
 	case *QLCommit:
-		if executor.activeTx == nil {
-			return QLResult{}, errors.New("no active transaction to commit")
+		if !executor.inTx() {
+			return QLResult{}, false, errors.New("no active transaction to commit")
 		}
 		err = executor.db.Commit(executor.activeTx)
 		executor.activeTx = nil
-		return QLResult{}, nil
+		return QLResult{}, false, err
 	case *QLRollback:
-		if executor.activeTx == nil {
-			return QLResult{}, errors.New("no active transaction to rollback")
+		if !executor.inTx() {
+			return QLResult{}, false, errors.New("no active transaction to rollback")
 		}
 		executor.db.Abort(executor.activeTx)
 		executor.activeTx = nil
-		return QLResult{}, nil
+		return QLResult{}, false, nil
 	}
 
 	// === handle DDL and DML statements ===
 
 	// currently in an explicit transaction block
-	if executor.activeTx != nil {
-		return executor.activeTx.execStmt(stmt)
+	if executor.inTx() {
+		res, err = executor.activeTx.execStmt(stmt)
+		return res, true, err
 	}
 
 	// auto-commit mode (implicit single-statement transaction)
 	tx := &DBTX{}
 	executor.db.Begin(tx)
-
-	res, err := tx.execStmt(stmt)
+	res, err = tx.execStmt(stmt)
 	if err != nil {
 		executor.db.Abort(tx)
-		return QLResult{}, err
+		return QLResult{}, false, err
 	}
-
 	err = executor.db.Commit(tx)
 	if err != nil {
-		return QLResult{}, err
+		return QLResult{}, false, err
 	}
-
-	return res, nil
+	return res, false, nil
 }

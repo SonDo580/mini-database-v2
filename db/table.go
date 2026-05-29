@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"sync"
 )
 
@@ -76,6 +77,18 @@ type Value struct {
 	Type uint32
 	I64  int64
 	Str  []byte
+}
+
+// string representation of Value
+func (v *Value) Display() string {
+	switch v.Type {
+	case TYPE_BYTES:
+		return string(v.Str)
+	case TYPE_INT64:
+		return strconv.FormatInt(v.I64, 10)
+	default:
+		panic("unreachable")
+	}
 }
 
 // table row

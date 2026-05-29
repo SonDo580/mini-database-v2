@@ -1,5 +1,9 @@
 **/*.db
 **/*debug*
+**/*.sql
+
+# compiled executable
+**/ql
 
 # incomplete, handle later
 db/*_test.go

@@ -830,13 +830,32 @@ type StmtScanner struct {
 	idx   int
 }
 
+func NewStmtScanner() *StmtScanner {
+	return &StmtScanner{}
+}
+
 func (s *StmtScanner) skipSpaces() {
 	for s.idx < len(s.input) && isSpace(s.input[s.idx]) {
 		s.idx++
 	}
 }
 
+// append to existing input stream
+func (s *StmtScanner) Append(extra []byte) {
+	s.input = append(s.input, extra...)
+}
+
+// clear accumulated input and reset pointer
+func (s *StmtScanner) Reset() {
+	s.input = s.input[:0]
+	s.idx = 0
+}
+
+var ErrStmtEmpty = errors.New("scan: empty stmt")
+var ErrStmtIncomplete = errors.New("scan: stmt not terminated")
+
 // get next QL statement string from input (not verified)
+// (don't advance if statement is incomplete)
 func (s *StmtScanner) NextStmtStr() (stmtStr []byte, err error) {
 	s.skipSpaces()
 	if s.idx == len(s.input) {
@@ -844,15 +863,38 @@ func (s *StmtScanner) NextStmtStr() (stmtStr []byte, err error) {
 	}
 
 	end := s.idx
-	for end < len(s.input) && s.input[end] != ';' {
-		end++
+
+	// currently inside a string literal if 'quote' is '\'' or '"'
+	var quote byte = 0
+
+	for end < len(s.input) {
+		ch := s.input[end]
+
+		if quote != 0 {
+			if ch == quote { // found matching quote
+				quote = 0
+			}
+			end++
+		} else {
+			if ch == '\'' || ch == '"' { // enter string literal
+				quote = ch
+				end++
+			} else if ch == ';' {
+				break // statement terminator
+			} else {
+				end++
+			}
+		}
 	}
 
+	if quote != 0 { // unterminated string literal
+		return nil, ErrStmtIncomplete
+	}
 	if end == s.idx { // s.input[s.idx] == ';'
-		return nil, errors.New("scan: empty stmt")
+		return nil, ErrStmtEmpty
 	}
 	if end == len(s.input) {
-		return nil, errors.New("scan: stmt not terminated")
+		return nil, ErrStmtIncomplete
 	}
 
 	stmtStr = s.input[s.idx : end+1] // include ';'
