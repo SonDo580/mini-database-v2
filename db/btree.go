@@ -112,7 +112,7 @@ func (node BNode) getVal(idx uint16) []byte {
 	assert(idx < node.nkeys())
 	pos := node.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(node[pos:])
-	vlen := binary.LittleEndian.Uint16((node[pos+2:]))
+	vlen := binary.LittleEndian.Uint16(node[pos+2:])
 	return node[pos+4+klen:][:vlen]
 }
 

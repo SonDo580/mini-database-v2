@@ -297,7 +297,7 @@ func (iter *CombinedIter) Deref() ([]byte, []byte) {
 	if topValid {
 		// topValid && bottomValid && bytes.Compare(k1, k2) != iter.direction
 		// || topValid && !bottomValid
-		return k1, v1
+		return k1, v1[1:] // 1st byte is updated/deleted flag
 	} else {
 		// bottomValid && !topValid
 		return k2, v2
