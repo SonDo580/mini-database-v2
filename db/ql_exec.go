@@ -636,8 +636,11 @@ func (tx *DBTX) execUpdate(req *QLUpdate) (uint64, error) {
 			return 0, err
 		}
 
-		assert(updated && dbReq.Updated) // update existing row
-		updatedCount++
+		// stats
+		assert(updated == dbReq.Updated)
+		if updated {
+			updatedCount++
+		}
 	}
 
 	return updatedCount, nil
